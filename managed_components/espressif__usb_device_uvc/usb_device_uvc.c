@@ -57,6 +57,8 @@ static void usb_phy_init(void)
         .target = USB_PHY_TARGET_INT,
 #if CONFIG_TINYUSB_RHPORT_HS
         .otg_speed = USB_PHY_SPEED_HIGH,
+#else
+        .otg_speed = USB_PHY_SPEED_FULL,
 #endif
     };
     usb_new_phy(&phy_conf, &s_uvc_device.phy_hdl);
