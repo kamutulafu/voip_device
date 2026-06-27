@@ -177,6 +177,38 @@ static esp_err_t video_start_cb(uvc_format_t uvc_format, int width, int height, 
     }
 
     /* Configure camera interface capture stream */
+    struct v4l2_format current_format;
+    memset(&current_format, 0, sizeof(current_format));
+    current_format.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    if (ioctl(uvc->cap_fd, VIDIOC_G_FMT, &current_format) == 0) {
+        ESP_LOGI(TAG, "Current sensor capture resolution: %dx%d", 
+                 (int)current_format.fmt.pix.width, (int)current_format.fmt.pix.height);
+        
+        if (current_format.fmt.pix.width != width || current_format.fmt.pix.height != height) {
+            struct v4l2_selection selection;
+            memset(&selection, 0, sizeof(selection));
+            selection.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+            selection.target = V4L2_SEL_TGT_CROP;
+            selection.r.width = width;
+            selection.r.height = height;
+            selection.r.left = (current_format.fmt.pix.width > width) ? (current_format.fmt.pix.width - width) / 2 : 0;
+            selection.r.top = (current_format.fmt.pix.height > height) ? (current_format.fmt.pix.height - height) / 2 : 0;
+            
+            // Align to even boundary (helpful for ISP/Bayer patterns)
+            selection.r.left &= ~1;
+            selection.r.top &= ~1;
+
+            ESP_LOGI(TAG, "Setting crop selection: left=%d, top=%d, width=%d, height=%d", 
+                     (int)selection.r.left, (int)selection.r.top, (int)selection.r.width, (int)selection.r.height);
+            
+            if (ioctl(uvc->cap_fd, VIDIOC_S_SELECTION, &selection) != 0) {
+                ESP_LOGE(TAG, "Failed to set selection");
+            }
+        }
+    } else {
+        ESP_LOGE(TAG, "Failed to get current format");
+    }
+
     memset(&format, 0, sizeof(format));
     format.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     format.fmt.pix.width = width;
