@@ -1,8 +1,7 @@
 # ESP-IDF files
 build/
-sdkconfig
 sdkconfig.old
-sdkconfig.defaults
+managed_components/
 
 # VS Code files
 .vscode/*
