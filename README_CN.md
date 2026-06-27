@@ -76,3 +76,37 @@ idf.py -p <PORT> flash monitor
 * [sdkconfig](./sdkconfig)：本地当前编译活动配置。
 * [main/main.c](./main/main.c)：应用程序主入口，包含 USB-OTG 信号重路由、CSI 与 JPEG 编码器初始化、以及 UVC 回调控制逻辑。
 * [components/ov5647/](./components/ov5647/)：OV5647 摄像头的底层 MIPI 传感器驱动组件。
+
+---
+
+## 6. 新增功能: 本地拍照与 Zmodem 导出
+
+为了方便在不连接 UVC USB 线的情况下调试摄像头成像效果，本项目新增了 SPIFFS 文件系统和 Zmodem 文件传输功能。
+
+### 6.1 拍照指令
+* **命令:** `camera_capture [filepath]`
+* **说明:** 拍摄一张照片并保存至 SPIFFS 文件系统。
+* **示例:**
+  ```bash
+  # 拍摄并保存至默认路径 /spiffs/photo.jpg
+  child_help> camera_capture
+  
+  # 拍摄并保存至自定义路径 /spiffs/test.jpg
+  child_help> camera_capture /spiffs/test.jpg
+  ```
+
+### 6.2 Zmodem 传输指令
+* **命令:** `zmodem_send <filepath>`
+* **说明:** 使用 Zmodem 协议将开发板上的图片或其他文件发送给 PC 端（兼容 MobaXterm）。
+* **操作步骤:**
+  1. 在串口终端中输入命令，例如:
+     ```bash
+     child_help> zmodem_send /spiffs/photo.jpg
+     ```
+  2. 控制台会提示:
+     ```text
+     Starting Zmodem transmission for photo.jpg (54200 bytes)...
+     Please start your Zmodem receiver (e.g. MobaXterm Z-mode receive) now!
+     ```
+  3. 在 **MobaXterm** 终端内，**右键单击终端窗口**，选择 **"File Transfer" -> "Receive file using Z-mode"**。
+  4. 选择 PC 端的目标保存路径，文件传输对话框会自动弹出并开始下载，完成后将自动返回 `child_help>` 交互界面。

@@ -46,3 +46,6 @@ CONFIG_EXAMPLE_DISABLE_USB_MSC_STORAGE=y
 # Configure TinyUSB to run in Full-Speed mode (required for GPIO24/25 routing)
 CONFIG_TINYUSB_RHPORT_FS=y
 # CONFIG_TINYUSB_RHPORT_HS is not set
+
+# Increase VFS max count for esp_video device registration
+CONFIG_VFS_MAX_COUNT=20
