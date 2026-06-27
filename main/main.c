@@ -16,6 +16,7 @@
 #include "usb_device_uvc.h"
 #include "uvc_frame_config.h"
 #include "console.h"
+#include "hal/usb_serial_jtag_ll.h"
 
 #define EXAMPLE_JPEG_COMPRESSION_QUALITY 80
 #define BUFFER_COUNT        2
@@ -382,6 +383,10 @@ static int cmd_uvc_init(int argc, char **argv)
     }
 
     printf("Starting UVC Camera initialization...\n");
+
+    // Route USB-OTG Full-Speed to GPIO24/GPIO25, and USB-Serial-JTAG to GPIO26/GPIO27
+    printf("Routing USB-OTG to GPIO24/GPIO25 (USB FS PHY 0)...\n");
+    usb_serial_jtag_ll_phy_select(1);
 
     // Initialize I2C Bus
     printf("Initializing I2C Master Bus (SDA=7, SCL=8)...\n");
