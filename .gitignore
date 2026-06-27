@@ -1,0 +1,17 @@
+# ESP-IDF files
+build/
+sdkconfig
+sdkconfig.old
+sdkconfig.defaults
+
+# VS Code files
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+.vscode/ipch/
+
+# System files
+.DS_Store
+Thumbs.db
