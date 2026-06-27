@@ -202,7 +202,7 @@ static esp_err_t video_start_cb(uvc_format_t uvc_format, int width, int height, 
                      (int)selection.r.left, (int)selection.r.top, (int)selection.r.width, (int)selection.r.height);
             
             if (ioctl(uvc->cap_fd, VIDIOC_S_SELECTION, &selection) != 0) {
-                ESP_LOGE(TAG, "Failed to set selection");
+                ESP_LOGW(TAG, "Failed to set selection (crop not supported or invalid)");
             }
         }
     } else {
