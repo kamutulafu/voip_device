@@ -1,0 +1,17 @@
+平台ESP32P4
+硬件连接：ov5647摄像头
+实现目标：uvc接口摄像头应用
+硬件接口：USB接口使用GPIO25（51脚）、GPIO24（50脚），
+驱动文件：F:\my_project_2026\ChildHelpSystem\code_main2\ov5647
+ov5647摄像头使用CSI接口
+IIC配置
+GPIO7(22脚)  ESP_I2C_SDA
+GPIO8（23脚）  ESP_I2C_SCL
+
+CSI接口
+CSI_CLKN 44脚 
+CSI_CLKP 43脚 
+CSI_DATAP0 42脚 
+CSI_DATAN0 41脚
+CSI_DATAP1 46脚
+CSI_DATAN1 45脚
