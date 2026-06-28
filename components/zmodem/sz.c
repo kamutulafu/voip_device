@@ -167,10 +167,10 @@ static rt_err_t zsend_file(struct zfile *zf, rt_uint8_t *buf, rt_uint16_t len)
 
 	for (cnt=0;cnt<5;cnt++) 
 	{  
-		tx_header[ZF0] = ZF0_CMD;	            /* file conversion option */
-		tx_header[ZF1] = ZF1_CMD;               /* file management option */
-		tx_header[ZF2] = (ZF3_CMD|ZF2_OP);	    /* file transfer option   */
-		tx_header[ZF3] = ZF3_CMD;
+		tx_header[ZF0] = ZCBIN;	                /* binary transfer - inhibit any newline/text conversion */
+		tx_header[ZF1] = 0;                     /* file management option: default (replace) */
+		tx_header[ZF2] = ZF2_OP;                /* file transfer option   */
+		tx_header[ZF3] = 0;
 		rt_kprintf("[Zmodem Send] Sending ZFILE header (attempt %d/5)\r\n", cnt + 1);
 		zsend_bin_header(ZFILE, tx_header);
 		zsend_bin_data(buf, len, ZCRCW);

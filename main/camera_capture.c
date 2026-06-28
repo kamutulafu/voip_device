@@ -28,8 +28,15 @@ void camera_capture_save_frame(const uint8_t *buf, size_t len)
         FILE *f = fopen(s_capture_filepath, "wb");
         if (f) {
             size_t written = fwrite(buf, 1, len, f);
-            fclose(f);
-            ESP_LOGI(TAG, "Frame captured and saved to %s (%d bytes)", s_capture_filepath, (int)written);
+            int flush_err = fflush(f);
+            int close_err = fclose(f);
+            if (written != len || flush_err != 0 || close_err != 0) {
+                ESP_LOGE(TAG, "Short/failed write to %s: wrote %d of %d bytes (flush=%d close=%d). "
+                              "File is truncated - check SPIFFS free space.",
+                         s_capture_filepath, (int)written, (int)len, flush_err, close_err);
+            } else {
+                ESP_LOGI(TAG, "Frame captured and saved to %s (%d bytes)", s_capture_filepath, (int)written);
+            }
         } else {
             ESP_LOGE(TAG, "Failed to open %s for frame capture", s_capture_filepath);
         }
