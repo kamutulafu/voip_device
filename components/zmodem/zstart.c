@@ -16,15 +16,25 @@ int cmd_zmodem_send(int argc, char **argv)
         printf("Usage: zmodem_send <filepath>\n");
         return -1;
     }
-    zs_start(argv[1]);
+    char filepath[256];
+    if (argv[1][0] == '/') {
+        snprintf(filepath, sizeof(filepath), "%s", argv[1]);
+    } else {
+        snprintf(filepath, sizeof(filepath), "/spiffs/%s", argv[1]);
+    }
+    zs_start(filepath);
     return 0;
 }
 
 int cmd_zmodem_recv(int argc, char **argv)
 {
-    const char *path = "/spiffs";
+    char path[256] = "/spiffs";
     if (argc >= 2) {
-        path = argv[1];
+        if (argv[1][0] == '/') {
+            snprintf(path, sizeof(path), "%s", argv[1]);
+        } else {
+            snprintf(path, sizeof(path), "/spiffs/%s", argv[1]);
+        }
     }
     char *path_copy = malloc(strlen(path) + 1);
     if (path_copy == NULL) {

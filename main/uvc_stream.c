@@ -51,6 +51,43 @@ static bool s_uvc_streaming = false;
 static int s_stream_width = 0;
 static int s_stream_height = 0;
 static int s_stream_fps = 0;
+static bool s_test_pattern_enabled = false;
+
+#ifndef V4L2_CID_TEST_PATTERN
+#define V4L2_CID_TEST_PATTERN (0x009f0900 + 3)
+#endif
+
+#ifndef V4L2_CTRL_CLASS_IMAGE_PROC
+#define V4L2_CTRL_CLASS_IMAGE_PROC 0x009f0000
+#endif
+
+static esp_err_t uvc_apply_test_pattern(bool enable)
+{
+    if (!s_uvc) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    struct v4l2_ext_controls controls;
+    struct v4l2_ext_control control[1];
+
+    memset(&controls, 0, sizeof(controls));
+    memset(control, 0, sizeof(control));
+
+    controls.ctrl_class = V4L2_CTRL_CLASS_IMAGE_PROC;
+    controls.count      = 1;
+    controls.controls   = control;
+    control[0].id       = V4L2_CID_TEST_PATTERN;
+    control[0].value    = enable ? 1 : 0;
+
+    if (ioctl(s_uvc->cap_fd, VIDIOC_S_EXT_CTRLS, &controls) != 0) {
+        ESP_LOGE(TAG, "Failed to set test pattern control");
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(TAG, "Camera test pattern %s successfully", enable ? "enabled" : "disabled");
+    return ESP_OK;
+}
+
 
 static void print_video_device_info(const struct v4l2_capability *capability)
 {
@@ -216,6 +253,10 @@ static esp_err_t video_start_cb(uvc_format_t uvc_format, int width, int height, 
     format.fmt.pix.height = height;
     format.fmt.pix.pixelformat = capture_fmt;
     ESP_ERROR_CHECK(ioctl(uvc->cap_fd, VIDIOC_S_FMT, &format));
+
+    if (s_test_pattern_enabled) {
+        uvc_apply_test_pattern(true);
+    }
 
     memset(&req, 0, sizeof(req));
     req.count  = BUFFER_COUNT;
@@ -546,11 +587,60 @@ int cmd_uvc_init(int argc, char **argv)
 int cmd_uvc_status(int argc, char **argv)
 {
     printf("UVC Camera Status:\n");
-    printf("  Initialized: %s\n", s_uvc_initialized ? "Yes" : "No");
-    printf("  Streaming:   %s\n", s_uvc_streaming ? "Yes (Active)" : "No (Idle)");
+    printf("  Initialized:  %s\n", s_uvc_initialized ? "Yes" : "No");
+    printf("  Streaming:    %s\n", s_uvc_streaming ? "Yes (Active)" : "No (Idle)");
     if (s_uvc_streaming) {
-        printf("  Resolution:  %d x %d\n", s_stream_width, s_stream_height);
-        printf("  Frame Rate:  %d FPS\n", s_stream_fps);
+        printf("  Resolution:   %d x %d\n", s_stream_width, s_stream_height);
+        printf("  Frame Rate:   %d FPS\n", s_stream_fps);
     }
+    printf("  Test Pattern: %s\n", s_test_pattern_enabled ? "Enabled" : "Disabled");
+    return 0;
+}
+
+esp_err_t uvc_set_test_pattern(bool enable)
+{
+    s_test_pattern_enabled = enable;
+    if (s_uvc_initialized && s_uvc_streaming) {
+        return uvc_apply_test_pattern(enable);
+    }
+    return ESP_OK;
+}
+
+bool uvc_is_test_pattern_enabled(void)
+{
+    return s_test_pattern_enabled;
+}
+
+int cmd_camera_test_pattern(int argc, char **argv)
+{
+    if (argc < 2) {
+        printf("Usage: camera_test_pattern <1|0> or <on|off>\n");
+        printf("Current status: %s\n", s_test_pattern_enabled ? "Enabled" : "Disabled");
+        return 0;
+    }
+
+    bool enable = false;
+    if (strcmp(argv[1], "1") == 0 || strcmp(argv[1], "on") == 0 || strcmp(argv[1], "ON") == 0) {
+        enable = true;
+    } else if (strcmp(argv[1], "0") == 0 || strcmp(argv[1], "off") == 0 || strcmp(argv[1], "OFF") == 0) {
+        enable = false;
+    } else {
+        printf("Invalid argument. Use 1/on or 0/off.\n");
+        return 1;
+    }
+
+    esp_err_t err = uvc_set_test_pattern(enable);
+    printf("Test pattern set to %s.\n", enable ? "Enabled" : "Disabled");
+
+    if (s_uvc_initialized && s_uvc_streaming) {
+        if (err != ESP_OK) {
+            printf("Failed to apply test pattern: %s\n", esp_err_to_name(err));
+            return 1;
+        }
+        printf("Applied test pattern to active stream.\n");
+    } else {
+        printf("Camera is not streaming. The setting will be applied when streaming starts.\n");
+    }
+
     return 0;
 }

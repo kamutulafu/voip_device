@@ -46,7 +46,11 @@ int cmd_camera_capture(int argc, char **argv)
 
     char filepath[128] = "/spiffs/photo.jpg";
     if (argc > 1) {
-        strlcpy(filepath, argv[1], sizeof(filepath));
+        if (argv[1][0] == '/') {
+            strlcpy(filepath, argv[1], sizeof(filepath));
+        } else {
+            snprintf(filepath, sizeof(filepath), "/spiffs/%s", argv[1]);
+        }
     }
 
     printf("Capturing photo to %s...\n", filepath);

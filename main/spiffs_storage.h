@@ -5,5 +5,6 @@
 
 esp_err_t init_spiffs(void);
 int cmd_ls(int argc, char **argv);
+int cmd_rm(int argc, char **argv);
 
 #endif // SPIFFS_STORAGE_H

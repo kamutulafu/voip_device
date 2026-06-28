@@ -45,6 +45,14 @@ void app_main(void)
     };
     ESP_ERROR_CHECK(console_register_cmd(&cmd_uvc_status_cfg));
 
+    const esp_console_cmd_t cmd_camera_test_pattern_cfg = {
+        .command = "camera_test_pattern",
+        .help = "Enable or disable the camera test pattern (color bar)",
+        .hint = "<1|0|on|off>",
+        .func = &cmd_camera_test_pattern,
+    };
+    ESP_ERROR_CHECK(console_register_cmd(&cmd_camera_test_pattern_cfg));
+
     // Register Camera Capture command
     const esp_console_cmd_t cmd_camera_capture_cfg = {
         .command = "camera_capture",
@@ -80,6 +88,15 @@ void app_main(void)
         .func = &cmd_ls,
     };
     ESP_ERROR_CHECK(console_register_cmd(&cmd_ls_cfg));
+
+    // Register rm command
+    const esp_console_cmd_t cmd_rm_cfg = {
+        .command = "rm",
+        .help = "Remove a file or all files in SPIFFS",
+        .hint = "<filename|all>",
+        .func = &cmd_rm,
+    };
+    ESP_ERROR_CHECK(console_register_cmd(&cmd_rm_cfg));
 
     ESP_LOGI(TAG, "Starting console REPL...");
     ESP_ERROR_CHECK(console_start());

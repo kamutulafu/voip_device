@@ -15,4 +15,8 @@ void uvc_return_stream_fb(void *fb);
 int cmd_uvc_init(int argc, char **argv);
 int cmd_uvc_status(int argc, char **argv);
 
+esp_err_t uvc_set_test_pattern(bool enable);
+bool uvc_is_test_pattern_enabled(void);
+int cmd_camera_test_pattern(int argc, char **argv);
+
 #endif // UVC_STREAM_H
