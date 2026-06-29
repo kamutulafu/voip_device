@@ -8,6 +8,8 @@
 #include "uvc_stream.h"
 #include "audio_driver.h"
 #include "wifi_manager.h"
+#include "esp_event.h"
+#include "esp_netif.h"
 
 int cmd_zmodem_send(int argc, char **argv);
 int cmd_zmodem_recv(int argc, char **argv);
