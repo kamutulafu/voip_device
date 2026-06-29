@@ -39,8 +39,30 @@ void zr_start(char *path)
 	memset(zf, 0, sizeof(struct zfile));
     zf->fname = path;
 	zf->fd = -1;
+	// Save current baudrate
+	uint32_t current_baud = 115200;
+	uart_get_baudrate(CONFIG_ESP_CONSOLE_UART_NUM, &current_baud);
+
+	// Temporarily delete UART driver and reinstall it with a larger RX buffer (8KB)
+	uart_driver_delete(CONFIG_ESP_CONSOLE_UART_NUM);
+	uart_config_t uart_cfg = {
+		.baud_rate = current_baud,
+		.data_bits = UART_DATA_8_BITS,
+		.parity = UART_PARITY_DISABLE,
+		.stop_bits = UART_STOP_BITS_1,
+		.flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+		.source_clk = UART_SCLK_DEFAULT,
+	};
+	uart_param_config(CONFIG_ESP_CONSOLE_UART_NUM, &uart_cfg);
+	uart_driver_install(CONFIG_ESP_CONSOLE_UART_NUM, 8192, 0, 0, NULL, 0);
+
 	uart_flush_input(CONFIG_ESP_CONSOLE_UART_NUM);
 	res = zrec_files(zf);   
+
+	// Restore original driver (1KB RX buffer) for REPL console
+	uart_driver_delete(CONFIG_ESP_CONSOLE_UART_NUM);
+	uart_param_config(CONFIG_ESP_CONSOLE_UART_NUM, &uart_cfg);
+	uart_driver_install(CONFIG_ESP_CONSOLE_UART_NUM, 1024, 0, 0, NULL, 0);
 	p = zf->fname;
 	for (;;)
 	{

@@ -33,7 +33,7 @@ typedef int      rt_err_t;
 #define rt_strlen     strlen
 #define rt_sprintf    sprintf
 void usb_jtag_debug_printf(const char *fmt, ...);
-#define rt_kprintf    usb_jtag_debug_printf
+#define rt_kprintf(...)  ((void)0)
 #define rt_thread_delay(ticks) vTaskDelay(ticks)
 
 struct rt_semaphore {
