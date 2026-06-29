@@ -453,6 +453,16 @@ static esp_err_t init_uvc(uvc_t *uvc)
     return ESP_OK;
 }
 
+i2c_master_bus_handle_t uvc_get_i2c_bus_handle(void)
+{
+    return g_i2c_bus_handle;
+}
+
+void uvc_set_i2c_bus_handle(i2c_master_bus_handle_t handle)
+{
+    g_i2c_bus_handle = handle;
+}
+
 bool uvc_is_initialized(void)
 {
     return s_uvc_initialized;
@@ -506,19 +516,24 @@ int cmd_uvc_init(int argc, char **argv)
     usb_serial_jtag_ll_phy_select(1);
 
     // Initialize I2C Bus
-    printf("Initializing I2C Master Bus (SDA=7, SCL=8)...\n");
-    i2c_master_bus_config_t i2c_bus_cfg = {
-        .clk_source = I2C_CLK_SRC_DEFAULT,
-        .i2c_port = 0,
-        .scl_io_num = 8,
-        .sda_io_num = 7,
-        .glitch_ignore_cnt = 7,
-        .flags.enable_internal_pullup = true,
-    };
-    esp_err_t err = i2c_new_master_bus(&i2c_bus_cfg, &g_i2c_bus_handle);
-    if (err != ESP_OK) {
-        printf("Failed to initialize I2C bus: %s\n", esp_err_to_name(err));
-        return 1;
+    esp_err_t err = ESP_OK;
+    if (g_i2c_bus_handle == NULL) {
+        printf("Initializing I2C Master Bus (SDA=7, SCL=8)...\n");
+        i2c_master_bus_config_t i2c_bus_cfg = {
+            .clk_source = I2C_CLK_SRC_DEFAULT,
+            .i2c_port = 0,
+            .scl_io_num = 8,
+            .sda_io_num = 7,
+            .glitch_ignore_cnt = 7,
+            .flags.enable_internal_pullup = true,
+        };
+        err = i2c_new_master_bus(&i2c_bus_cfg, &g_i2c_bus_handle);
+        if (err != ESP_OK) {
+            printf("Failed to initialize I2C bus: %s\n", esp_err_to_name(err));
+            return 1;
+        }
+    } else {
+        printf("I2C Master Bus already initialized, sharing it.\n");
     }
 
     // Initialize Video Pipeline

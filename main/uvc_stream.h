@@ -12,6 +12,10 @@ void uvc_stop_stream(void);
 void *uvc_get_stream_fb(void);
 void uvc_return_stream_fb(void *fb);
 
+#include "driver/i2c_master.h"
+i2c_master_bus_handle_t uvc_get_i2c_bus_handle(void);
+void uvc_set_i2c_bus_handle(i2c_master_bus_handle_t handle);
+
 int cmd_uvc_init(int argc, char **argv);
 int cmd_uvc_status(int argc, char **argv);
 

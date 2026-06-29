@@ -6,6 +6,7 @@
 #include "spiffs_storage.h"
 #include "camera_capture.h"
 #include "uvc_stream.h"
+#include "audio_driver.h"
 
 int cmd_zmodem_send(int argc, char **argv);
 int cmd_zmodem_recv(int argc, char **argv);
@@ -97,6 +98,24 @@ void app_main(void)
         .func = &cmd_rm,
     };
     ESP_ERROR_CHECK(console_register_cmd(&cmd_rm_cfg));
+
+    // Register audio record command
+    const esp_console_cmd_t cmd_audio_record_cfg = {
+        .command = "audio_record",
+        .help = "Record audio from microphone and save to SPIFFS",
+        .hint = "<filename> [duration_sec]",
+        .func = &cmd_audio_record,
+    };
+    ESP_ERROR_CHECK(console_register_cmd(&cmd_audio_record_cfg));
+
+    // Register audio play command
+    const esp_console_cmd_t cmd_audio_play_cfg = {
+        .command = "audio_play",
+        .help = "Play audio from SPIFFS using the speaker",
+        .hint = "<filename> [volume_percent]",
+        .func = &cmd_audio_play,
+    };
+    ESP_ERROR_CHECK(console_register_cmd(&cmd_audio_play_cfg));
 
     ESP_LOGI(TAG, "Starting console REPL...");
     ESP_ERROR_CHECK(console_start());

@@ -1,3 +1,4 @@
 dependencies:
   esp_video: "1.4.1"
   usb_device_uvc: "1.2.*"
+  espressif/es8311: "^1.0.0"

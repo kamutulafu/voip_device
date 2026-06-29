@@ -9,6 +9,16 @@ dependencies:
       registry_url: https://components.espressif.com
       type: service
     version: 0.5.3
+  espressif/es8311:
+    component_hash: 46b3117250344bb03f143d5e2becf81cfb111679fbd7b95cefc2d302d36cc393
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=4.4,<6.0'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.0.0~1
   espressif/esp_cam_sensor:
     component_hash: db5b1c725799dced61e7b100dc027e1e59558c9973d7e1ed8ce42a5ec89da31c
     dependencies:
@@ -179,8 +189,9 @@ dependencies:
       type: idf
     version: 5.5.0
 direct_dependencies:
+- espressif/es8311
 - espressif/esp_video
 - espressif/usb_device_uvc
-manifest_hash: f73a45c778db6b14c294b6886d2083a8b86760a2a59b69d91574b9638a3fab2f
+manifest_hash: 4587a4218280eb18503687e5a9a84066eb1ee20d32b44305c5e9aa08bfc63697
 target: esp32p4
 version: 2.0.0

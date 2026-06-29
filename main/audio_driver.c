@@ -1,0 +1,544 @@
+#include "audio_driver.h"
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include "sdkconfig.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "driver/i2s_std.h"
+#include "driver/gpio.h"
+#include "driver/i2c_master.h"
+#include "esp_system.h"
+#include "esp_log.h"
+#include "uvc_stream.h"
+
+static const char *TAG = "audio_driver";
+
+#define ES8311_I2C_ADDR         0x18
+#define GPIO_OUTPUT_PA          53
+
+#define I2S_NUM                 0
+#define I2S_MCK_IO              13
+#define I2S_BCK_IO              12
+#define I2S_WS_IO               10
+#define I2S_DO_IO               9
+#define I2S_DI_IO               11
+
+#define AUDIO_SAMPLE_RATE       16000
+#define AUDIO_MCLK_MULTIPLE     384
+
+static i2c_master_dev_handle_t s_es8311_i2c_handle = NULL;
+static i2s_chan_handle_t tx_handle = NULL;
+static i2s_chan_handle_t rx_handle = NULL;
+static bool s_audio_initialized = false;
+
+#pragma pack(push, 1)
+typedef struct {
+    char chunk_id[4];          // "RIFF"
+    uint32_t chunk_size;       // file_size - 8
+    char format[4];            // "WAVE"
+    char subchunk1_id[4];      // "fmt "
+    uint32_t subchunk1_size;   // 16 for PCM
+    uint16_t audio_format;     // 1 for PCM
+    uint16_t num_channels;     // 2 (Stereo)
+    uint32_t sample_rate;      // 16000
+    uint32_t byte_rate;        // sample_rate * num_channels * bits_per_sample / 8
+    uint16_t block_align;      // num_channels * bits_per_sample / 8
+    uint16_t bits_per_sample;  // 16
+    char subchunk2_id[4];      // "data"
+    uint32_t subchunk2_size;   // data_size
+} wav_header_t;
+#pragma pack(pop)
+
+static esp_err_t es8311_write_reg(uint8_t reg, uint8_t val)
+{
+    if (s_es8311_i2c_handle == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    uint8_t buf[2] = {reg, val};
+    return i2c_master_transmit(s_es8311_i2c_handle, buf, 2, pdMS_TO_TICKS(1000));
+}
+
+static esp_err_t __attribute__((unused)) es8311_read_reg(uint8_t reg, uint8_t *val)
+{
+    if (s_es8311_i2c_handle == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    return i2c_master_transmit_receive(s_es8311_i2c_handle, &reg, 1, val, 1, pdMS_TO_TICKS(1000));
+}
+
+static esp_err_t es8311_init_internal(void)
+{
+    esp_err_t ret = ESP_OK;
+
+    // Reset ES8311
+    ret |= es8311_write_reg(0x00, 0x1F);
+    vTaskDelay(pdMS_TO_TICKS(20));
+    ret |= es8311_write_reg(0x00, 0x00);
+    ret |= es8311_write_reg(0x00, 0x80); // Power on
+    vTaskDelay(pdMS_TO_TICKS(10));
+
+    // Clock configuration: 16 kHz sample rate, 384x MCLK multiple (MCLK = 6.144 MHz)
+    // Register 01: 0x3F (All clocks enabled, MCLK pin source)
+    ret |= es8311_write_reg(0x01, 0x3F);
+
+    // Register 02: Pre-div=3, pre-multi=1 -> (3-1)<<5 | 1<<3 = 0x48
+    ret |= es8311_write_reg(0x02, 0x48);
+
+    // Register 03: fs_mode=0, adc_osr=16 -> 0x10
+    ret |= es8311_write_reg(0x03, 0x10);
+
+    // Register 04: dac_osr=16 -> 0x10
+    ret |= es8311_write_reg(0x04, 0x10);
+
+    // Register 05: adc_div=1, dac_div=1 -> 0x00
+    ret |= es8311_write_reg(0x05, 0x00);
+
+    // Register 06: bclk_div=4 -> clear bit 5 for sclk non-inverted, bclk_div-1=3 -> 0x03
+    ret |= es8311_write_reg(0x06, 0x03);
+
+    // Register 07: lrck_h=0 -> 0x00
+    ret |= es8311_write_reg(0x07, 0x00);
+
+    // Register 08: lrck_l=255 -> 0xFF (since LRCK divider = 256)
+    ret |= es8311_write_reg(0x08, 0xFF);
+
+    // Format configuration: Slave mode, 16-bit I2S
+    // Register 00: Bit 6 is 0 (Slave mode)
+    // Register 09: SDP In 16-bit -> 0x0C (3 << 2)
+    ret |= es8311_write_reg(0x09, 0x0C);
+    // Register 0A: SDP Out 16-bit -> 0x0C (3 << 2)
+    ret |= es8311_write_reg(0x0A, 0x0C);
+
+    // System configuration (from standard initialization sequence)
+    ret |= es8311_write_reg(0x0D, 0x01); // Power up analog circuitry
+    ret |= es8311_write_reg(0x0E, 0x02); // Enable analog PGA, enable ADC modulator
+    ret |= es8311_write_reg(0x12, 0x00); // Power up DAC
+    ret |= es8311_write_reg(0x13, 0x10); // Enable output to HP drive (headphones/speaker)
+    ret |= es8311_write_reg(0x1C, 0x6A); // ADC Equalizer bypass, cancel DC offset
+    ret |= es8311_write_reg(0x37, 0x08); // Bypass DAC equalizer
+
+    // Microphone configuration
+    ret |= es8311_write_reg(0x17, 0xC8); // Set ADC gain
+    ret |= es8311_write_reg(0x14, 0x1A); // Enable analog MIC and max PGA gain
+    ret |= es8311_write_reg(0x16, 0x03); // Mic gain to +18dB (ES8311_MIC_GAIN_18DB)
+
+    // Volume configuration (60%)
+    ret |= es8311_write_reg(0x32, 0x98);
+
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "ES8311 register init failed");
+        return ESP_FAIL;
+    }
+    ESP_LOGI(TAG, "ES8311 Codec register init successful");
+    return ESP_OK;
+}
+
+esp_err_t audio_init(void)
+{
+    if (s_audio_initialized) {
+        ESP_LOGI(TAG, "Audio already initialized");
+        return ESP_OK;
+    }
+
+    // 1. Initialize PA GPIO
+    gpio_config_t io_conf = {
+        .pin_bit_mask = (1ULL << GPIO_OUTPUT_PA),
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE
+    };
+    gpio_config(&io_conf);
+    gpio_set_level(GPIO_OUTPUT_PA, 1); // Enable PA
+
+    // 2. Initialize I2C Bus & Add ES8311 device
+    i2c_master_bus_handle_t i2c_bus = uvc_get_i2c_bus_handle();
+    if (i2c_bus == NULL) {
+        ESP_LOGI(TAG, "Initializing I2C Master Bus (SDA=7, SCL=8) for Audio...");
+        i2c_master_bus_config_t i2c_bus_cfg = {
+            .clk_source = I2C_CLK_SRC_DEFAULT,
+            .i2c_port = 0,
+            .scl_io_num = 8,
+            .sda_io_num = 7,
+            .glitch_ignore_cnt = 7,
+            .flags.enable_internal_pullup = true,
+        };
+        esp_err_t err = i2c_new_master_bus(&i2c_bus_cfg, &i2c_bus);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to create I2C bus: %s", esp_err_to_name(err));
+            return err;
+        }
+        uvc_set_i2c_bus_handle(i2c_bus);
+    } else {
+        ESP_LOGI(TAG, "Sharing I2C Master Bus from UVC...");
+    }
+
+    i2c_device_config_t dev_cfg = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address = ES8311_I2C_ADDR,
+        .scl_speed_hz = 100000,
+    };
+    esp_err_t err = i2c_master_bus_add_device(i2c_bus, &dev_cfg, &s_es8311_i2c_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to add ES8311 device to I2C: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    // 3. Initialize ES8311 Codec via I2C
+    err = es8311_init_internal();
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    // 4. Initialize I2S Channels
+    i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM, I2S_ROLE_MASTER);
+    chan_cfg.auto_clear = true;
+    err = i2s_new_channel(&chan_cfg, &tx_handle, &rx_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to create I2S channels: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    i2s_std_config_t std_cfg = {
+        .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(AUDIO_SAMPLE_RATE),
+        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO),
+        .gpio_cfg = {
+            .mclk = I2S_MCK_IO,
+            .bclk = I2S_BCK_IO,
+            .ws = I2S_WS_IO,
+            .dout = I2S_DO_IO,
+            .din = I2S_DI_IO,
+            .invert_flags = {
+                .mclk_inv = false,
+                .bclk_inv = false,
+                .ws_inv = false,
+            },
+        },
+    };
+    std_cfg.clk_cfg.mclk_multiple = AUDIO_MCLK_MULTIPLE;
+
+    err = i2s_channel_init_std_mode(tx_handle, &std_cfg);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to init I2S TX: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    err = i2s_channel_init_std_mode(rx_handle, &std_cfg);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to init I2S RX: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    err = i2s_channel_enable(tx_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to enable I2S TX: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    err = i2s_channel_enable(rx_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to enable I2S RX: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    s_audio_initialized = true;
+    ESP_LOGI(TAG, "Audio Driver initialized successfully!");
+    return ESP_OK;
+}
+
+void audio_deinit(void)
+{
+    if (!s_audio_initialized) {
+        return;
+    }
+
+    gpio_set_level(GPIO_OUTPUT_PA, 0); // Disable PA
+
+    if (tx_handle) {
+        i2s_channel_disable(tx_handle);
+        i2s_del_channel(tx_handle);
+        tx_handle = NULL;
+    }
+
+    if (rx_handle) {
+        i2s_channel_disable(rx_handle);
+        i2s_del_channel(rx_handle);
+        rx_handle = NULL;
+    }
+
+    if (s_es8311_i2c_handle) {
+        i2c_master_bus_rm_device(s_es8311_i2c_handle);
+        s_es8311_i2c_handle = NULL;
+    }
+
+    s_audio_initialized = false;
+    ESP_LOGI(TAG, "Audio Driver deinitialized");
+}
+
+esp_err_t audio_record_to_file(const char *filename, uint32_t duration_sec)
+{
+    if (!s_audio_initialized) {
+        esp_err_t err = audio_init();
+        if (err != ESP_OK) {
+            return err;
+        }
+    }
+
+    FILE *f = fopen(filename, "wb");
+    if (f == NULL) {
+        ESP_LOGE(TAG, "Failed to open file %s for writing", filename);
+        return ESP_FAIL;
+    }
+
+    // Write placeholder WAV header
+    wav_header_t header;
+    memcpy(header.chunk_id, "RIFF", 4);
+    header.chunk_size = 0; // Update later
+    memcpy(header.format, "WAVE", 4);
+    memcpy(header.subchunk1_id, "fmt ", 4);
+    header.subchunk1_size = 16;
+    header.audio_format = 1; // PCM
+    header.num_channels = 2; // Stereo
+    header.sample_rate = AUDIO_SAMPLE_RATE;
+    header.bits_per_sample = 16;
+    header.byte_rate = AUDIO_SAMPLE_RATE * 2 * 16 / 8;
+    header.block_align = 2 * 16 / 8;
+    memcpy(header.subchunk2_id, "data", 4);
+    header.subchunk2_size = 0; // Update later
+
+    if (fwrite(&header, 1, sizeof(header), f) != sizeof(header)) {
+        ESP_LOGE(TAG, "Failed to write WAV header");
+        fclose(f);
+        return ESP_FAIL;
+    }
+
+    // Allocate read buffer
+    const uint32_t buf_size = 4096;
+    uint8_t *buf = malloc(buf_size);
+    if (buf == NULL) {
+        ESP_LOGE(TAG, "Failed to allocate memory for record buffer");
+        fclose(f);
+        return ESP_ERR_NO_MEM;
+    }
+
+    uint32_t bytes_to_record = duration_sec * header.byte_rate;
+    uint32_t total_recorded_bytes = 0;
+    size_t bytes_read = 0;
+
+    ESP_LOGI(TAG, "Recording started... saving to %s (%d seconds)", filename, (int)duration_sec);
+
+    while (total_recorded_bytes < bytes_to_record) {
+        uint32_t chunk = bytes_to_record - total_recorded_bytes;
+        if (chunk > buf_size) {
+            chunk = buf_size;
+        }
+
+        esp_err_t ret = i2s_channel_read(rx_handle, buf, chunk, &bytes_read, pdMS_TO_TICKS(1000));
+        if (ret == ESP_OK && bytes_read > 0) {
+            size_t written = fwrite(buf, 1, bytes_read, f);
+            if (written != bytes_read) {
+                ESP_LOGE(TAG, "File write failed. Disk full?");
+                break;
+            }
+            total_recorded_bytes += bytes_read;
+        } else {
+            ESP_LOGW(TAG, "I2S read timeout or error: %s", esp_err_to_name(ret));
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+    }
+
+    free(buf);
+
+    // Update WAV header with actual size
+    header.chunk_size = total_recorded_bytes + sizeof(wav_header_t) - 8;
+    header.subchunk2_size = total_recorded_bytes;
+
+    if (fseek(f, 0, SEEK_SET) == 0) {
+        fwrite(&header, 1, sizeof(header), f);
+    }
+    fclose(f);
+
+    ESP_LOGI(TAG, "Recording stopped. Recorded %d bytes to %s", (int)total_recorded_bytes, filename);
+    return ESP_OK;
+}
+
+esp_err_t audio_play_from_file(const char *filename)
+{
+    if (!s_audio_initialized) {
+        esp_err_t err = audio_init();
+        if (err != ESP_OK) {
+            return err;
+        }
+    }
+
+    FILE *f = fopen(filename, "rb");
+    if (f == NULL) {
+        ESP_LOGE(TAG, "Failed to open file %s for reading", filename);
+        return ESP_FAIL;
+    }
+
+    // Read WAV header
+    wav_header_t header;
+    if (fread(&header, 1, sizeof(header), f) != sizeof(header)) {
+        ESP_LOGE(TAG, "Failed to read WAV header");
+        fclose(f);
+        return ESP_FAIL;
+    }
+
+    // Validate WAV header
+    if (memcmp(header.chunk_id, "RIFF", 4) != 0 || memcmp(header.format, "WAVE", 4) != 0) {
+        ESP_LOGE(TAG, "Invalid WAV file format");
+        fclose(f);
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    ESP_LOGI(TAG, "Playing WAV: sample_rate=%d, channels=%d, bits=%d",
+             (int)header.sample_rate, (int)header.num_channels, (int)header.bits_per_sample);
+
+    // Allocate play buffers
+    const uint32_t read_buf_size = 2048;
+    uint8_t *read_buf = malloc(read_buf_size);
+    if (read_buf == NULL) {
+        ESP_LOGE(TAG, "Failed to allocate read buffer");
+        fclose(f);
+        return ESP_ERR_NO_MEM;
+    }
+
+    // Since I2S is configured as stereo, 16-bit, if WAV is mono, we need to convert it on the fly.
+    uint8_t *play_buf = read_buf;
+    uint32_t play_buf_size = read_buf_size;
+    uint8_t *mono_to_stereo_buf = NULL;
+
+    if (header.num_channels == 1) {
+        play_buf_size = read_buf_size * 2;
+        mono_to_stereo_buf = malloc(play_buf_size);
+        if (mono_to_stereo_buf == NULL) {
+            ESP_LOGE(TAG, "Failed to allocate mono-to-stereo buffer");
+            free(read_buf);
+            fclose(f);
+            return ESP_ERR_NO_MEM;
+        }
+        play_buf = mono_to_stereo_buf;
+    }
+
+    size_t bytes_read = 0;
+    size_t bytes_written = 0;
+    ESP_LOGI(TAG, "Playback started...");
+
+    while ((bytes_read = fread(read_buf, 1, read_buf_size, f)) > 0) {
+        uint32_t bytes_to_write = bytes_read;
+
+        if (header.num_channels == 1) {
+            // Convert mono to stereo (16-bit)
+            int16_t *mono_samples = (int16_t *)read_buf;
+            int16_t *stereo_samples = (int16_t *)mono_to_stereo_buf;
+            uint32_t num_samples = bytes_read / 2;
+            for (uint32_t i = 0; i < num_samples; i++) {
+                stereo_samples[2 * i] = mono_samples[i];
+                stereo_samples[2 * i + 1] = mono_samples[i];
+            }
+            bytes_to_write = bytes_read * 2;
+        }
+
+        esp_err_t ret = i2s_channel_write(tx_handle, play_buf, bytes_to_write, &bytes_written, pdMS_TO_TICKS(1000));
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "I2S write failed: %s", esp_err_to_name(ret));
+            break;
+        }
+    }
+
+    free(read_buf);
+    if (mono_to_stereo_buf) {
+        free(mono_to_stereo_buf);
+    }
+    fclose(f);
+
+    ESP_LOGI(TAG, "Playback finished.");
+    return ESP_OK;
+}
+
+int cmd_audio_record(int argc, char **argv)
+{
+    if (argc < 2) {
+        printf("Usage: audio_record <filename> [duration_sec]\n");
+        printf("Example: audio_record rec.wav 5\n");
+        return 1;
+    }
+
+    char filepath[256];
+    if (argv[1][0] == '/') {
+        snprintf(filepath, sizeof(filepath), "%s", argv[1]);
+    } else {
+        snprintf(filepath, sizeof(filepath), "/spiffs/%s", argv[1]);
+    }
+
+    uint32_t duration = 5; // Default 5 seconds
+    if (argc >= 3) {
+        duration = atoi(argv[2]);
+        if (duration == 0 || duration > 3600) {
+            printf("Invalid duration (1 to 3600 seconds)\n");
+            return 1;
+        }
+    }
+
+    esp_err_t err = audio_record_to_file(filepath, duration);
+    if (err != ESP_OK) {
+        printf("Recording failed with error: %s\n", esp_err_to_name(err));
+        return 1;
+    }
+    printf("Recorded successfully to %s\n", filepath);
+    return 0;
+}
+
+esp_err_t audio_set_volume(uint8_t volume)
+{
+    if (!s_audio_initialized) {
+        esp_err_t err = audio_init();
+        if (err != ESP_OK) {
+            return err;
+        }
+    }
+    if (volume > 100) {
+        volume = 100;
+    }
+    uint8_t reg_val = volume * 255 / 100;
+    return es8311_write_reg(0x32, reg_val);
+}
+
+int cmd_audio_play(int argc, char **argv)
+{
+    if (argc < 2) {
+        printf("Usage: audio_play <filename> [volume_percent]\n");
+        printf("Example: audio_play rec.wav 80\n");
+        return 1;
+    }
+
+    char filepath[256];
+    if (argv[1][0] == '/') {
+        snprintf(filepath, sizeof(filepath), "%s", argv[1]);
+    } else {
+        snprintf(filepath, sizeof(filepath), "/spiffs/%s", argv[1]);
+    }
+
+    if (argc >= 3) {
+        int vol = atoi(argv[2]);
+        if (vol < 0 || vol > 100) {
+            printf("Invalid volume (0 to 100)\n");
+            return 1;
+        }
+        esp_err_t err = audio_set_volume((uint8_t)vol);
+        if (err != ESP_OK) {
+            printf("Failed to set volume: %s\n", esp_err_to_name(err));
+            return 1;
+        }
+    }
+
+    esp_err_t err = audio_play_from_file(filepath);
+    if (err != ESP_OK) {
+        printf("Playback failed with error: %s\n", esp_err_to_name(err));
+        return 1;
+    }
+    printf("Played successfully from %s\n", filepath);
+    return 0;
+}

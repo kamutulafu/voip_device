@@ -1,3 +1,3 @@
-idf_component_register(SRCS "uvc_stream.c" "main.c" "console.c" "spiffs_storage.c" "camera_capture.c"
+idf_component_register(SRCS "uvc_stream.c" "main.c" "console.c" "spiffs_storage.c" "camera_capture.c" "audio_driver.c"
                     INCLUDE_DIRS "."
-                    PRIV_REQUIRES espressif__esp_video espressif__usb_device_uvc espressif__tinyusb console nvs_flash spiffs esp_driver_uart zmodem)
+                    PRIV_REQUIRES espressif__esp_video espressif__usb_device_uvc espressif__tinyusb console nvs_flash spiffs esp_driver_uart zmodem esp_driver_i2s esp_driver_gpio esp_driver_i2c)
