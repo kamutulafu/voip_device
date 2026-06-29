@@ -7,11 +7,14 @@
 #include "camera_capture.h"
 #include "uvc_stream.h"
 #include "audio_driver.h"
+#include "wifi_manager.h"
 
 int cmd_zmodem_send(int argc, char **argv);
 int cmd_zmodem_recv(int argc, char **argv);
 
 static const char *TAG = "main";
+
+
 
 void app_main(void)
 {
@@ -22,6 +25,10 @@ void app_main(void)
         ret = nvs_flash_init();
     }
     ESP_ERROR_CHECK(ret);
+
+    // Initialize Netif and Default Event Loop
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
 
     // Initialize SPIFFS
     ESP_ERROR_CHECK(init_spiffs());
@@ -116,6 +123,18 @@ void app_main(void)
         .func = &cmd_audio_play,
     };
     ESP_ERROR_CHECK(console_register_cmd(&cmd_audio_play_cfg));
+
+    // Register wifi_join command
+    const esp_console_cmd_t cmd_wifi_join_cfg = {
+        .command = "wifi_join",
+        .help = "Join a WiFi network",
+        .hint = "<ssid> <password>",
+        .func = &cmd_wifi_join,
+    };
+    ESP_ERROR_CHECK(console_register_cmd(&cmd_wifi_join_cfg));
+
+    // Trigger auto-connection to saved WiFi in background
+    wifi_manager_start_autoconnect();
 
     ESP_LOGI(TAG, "Starting console REPL...");
     ESP_ERROR_CHECK(console_start());
