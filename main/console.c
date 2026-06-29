@@ -17,6 +17,7 @@ esp_err_t console_init(void)
     esp_console_repl_config_t repl_config = ESP_CONSOLE_REPL_CONFIG_DEFAULT();
     repl_config.prompt = "child_help>";
     repl_config.max_cmdline_length = 256;
+    repl_config.task_stack_size = 8192;
 
     // Register help command
     esp_console_register_help_command();

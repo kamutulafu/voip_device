@@ -29,18 +29,28 @@ rt_uint32_t get_sys_time(void)
 void zsend_byte(rt_uint16_t ch)
 {
     uint8_t b = ch & 0xFF;
+#ifdef ZDEBUG_BYTE
+    usb_jtag_debug_printf("[T:0x%02X]", b);
+#endif
     uart_write_bytes(CONFIG_ESP_CONSOLE_UART_NUM, &b, 1);
 }
 
 void zsend_line(rt_uint16_t c)
 {
     uint8_t b = c & 0xFF;
+#ifdef ZDEBUG_BYTE
+    usb_jtag_debug_printf("[TL:0x%02X]", b);
+#endif
     uart_write_bytes(CONFIG_ESP_CONSOLE_UART_NUM, &b, 1);
 }
 
 rt_int16_t zread_line(rt_uint16_t timeout)
 {
     uint8_t c;
+    // Cap maximum timeout to 2.0 seconds (20 tenths of a second) to prevent long blocks
+    if (timeout > 20) {
+        timeout = 20;
+    }
     // timeout is in tenths of a second (100ms units)
     int timeout_ms = timeout * 100;
     if (timeout_ms == 0) {
@@ -48,6 +58,9 @@ rt_int16_t zread_line(rt_uint16_t timeout)
     }
     int len = uart_read_bytes(CONFIG_ESP_CONSOLE_UART_NUM, &c, 1, pdMS_TO_TICKS(timeout_ms));
     if (len > 0) {
+#ifdef ZDEBUG_BYTE
+        usb_jtag_debug_printf("[R:0x%02X]", c);
+#endif
         return c & 0377;
     }
     return TIMEOUT;

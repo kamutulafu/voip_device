@@ -39,6 +39,7 @@ void zr_start(char *path)
 	memset(zf, 0, sizeof(struct zfile));
     zf->fname = path;
 	zf->fd = -1;
+	uart_flush_input(CONFIG_ESP_CONSOLE_UART_NUM);
 	res = zrec_files(zf);   
 	p = zf->fname;
 	for (;;)
@@ -60,8 +61,8 @@ void zr_start(char *path)
 		{
 	        close(zf->fd);
 	        unlink(zf->fname);    /* remove this file */ 
-			rt_free(zf->fname);
 		}	
+		rt_free(zf->fname);
     }
 	rt_free(zf);
 	/* waiting,clear console buffer */
@@ -268,6 +269,7 @@ static rt_err_t zget_file_info(char *name, struct zfile *zf)
 	if (zf->fname != RT_NULL) {
 		strcpy(full_path, zf->fname);
 		strcat(full_path, "/");
+		rt_free(zf->fname);
 	}
 	strcat(full_path, name);
 	zf->fname = full_path;

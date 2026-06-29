@@ -43,6 +43,7 @@ void zs_start(char *path)
 	memset(zf, 0, sizeof(struct zfile));
     zf->fname = path;
 	zf->fd = -1;
+	uart_flush_input(CONFIG_ESP_CONSOLE_UART_NUM);
 	res = zsend_files(zf);
 	p = zf->fname;
 	for (;;)

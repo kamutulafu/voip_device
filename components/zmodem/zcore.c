@@ -265,19 +265,17 @@ static rt_int16_t zrec_data16(rt_uint8_t *buf, rt_uint16_t len)
 	rt_int16_t c,crc_cnt;
 	rt_uint16_t crc;
 	rt_err_t res = -RT_ERROR;
- 	rt_uint8_t *p,flag = 0;
+ 	rt_uint8_t flag = 0;
 
-	p = buf;	
 	crc_cnt = 0;  crc = 0L;   
     Rxcount = 0; 
-	while(buf <= p+len) 
+	for (;;) 
 	{
 		if ((res = zread_byte()) & ~0377)
 		{
 		    if (res == GOTCRCE || res == GOTCRCG ||
 			    res == GOTCRCQ || res == GOTCRCW)
 			{
-				  c = res;
 				  c = res;
 				  crc = updcrc16(res&0377, crc);
 				  flag = 1;	
@@ -298,7 +296,7 @@ static rt_int16_t zrec_data16(rt_uint8_t *buf, rt_uint16_t len)
 			   if ((crc & 0xffff))
 			   {
 #ifdef ZDEBUG
-				 	 rt_kprintf("error code: CRC16 error \r\n");
+				 	 rt_kprintf("error code: CRC16 error (calculated CRC: 0x%04X)\r\n", crc);
 #endif
 					 return -RT_ERROR;
 			   } 
@@ -306,6 +304,10 @@ static rt_int16_t zrec_data16(rt_uint8_t *buf, rt_uint16_t len)
 		   }
 		   else
 		   {
+		      if (Rxcount >= len)
+		      {
+		          return -RT_ERROR;
+		      }
 		      *buf++ = res;
 		      Rxcount++;
 		      crc = updcrc16(res, crc);
@@ -322,12 +324,11 @@ static rt_int16_t zrec_data32(rt_uint8_t *buf, rt_int16_t len)
 	rt_int16_t c,crc_cnt;
 	rt_uint32_t crc;
 	rt_err_t res = -RT_ERROR;
-	rt_uint8_t *p,flag = 0;
+	rt_uint8_t flag = 0;
 
-	p = buf;
 	crc_cnt = 0;   crc = 0xffffffffL;  
 	Rxcount = 0;  
-	while (buf <= p+len) 
+	for (;;) 
 	{
 		if ((res = zread_byte()) & ~0377)
 		{
@@ -354,7 +355,7 @@ static rt_int16_t zrec_data32(rt_uint8_t *buf, rt_int16_t len)
 			   if ((crc & 0xDEBB20E3))
 			   {
 #ifdef ZDEBUG
-				 	 rt_kprintf("error code: CRC32 error \r\n");
+				 	 rt_kprintf("error code: CRC32 error (calculated CRC: 0x%08X)\r\n", crc);
 #endif
 					 return -RT_ERROR;
 			   } 
@@ -362,6 +363,10 @@ static rt_int16_t zrec_data32(rt_uint8_t *buf, rt_int16_t len)
 		   }
 		   else
 		   {
+		      if (Rxcount >= len)
+		      {
+		          return -RT_ERROR;
+		      }
 		      *buf++ = res;
 		      Rxcount++;
 		      crc = updcrc32(res, crc);
@@ -382,7 +387,7 @@ static rt_int16_t zrec_data32r(rt_uint8_t *buf, rt_int16_t len)
 	crc_cnt = 0; crc = 0xffffffffL;  
 	Rxcount = 0;  
 	p = buf;
-	while (buf <= p+len) 
+	for (;;) 
 	{
 		if ((res = zread_byte()) & ~0377)
 		{
@@ -425,18 +430,22 @@ static rt_int16_t zrec_data32r(rt_uint8_t *buf, rt_int16_t len)
 			        {
 			 	        c = -1;  continue;
 			        }
+			        if (buf >= p+len)
+			            goto end;
 			        *buf++ = res;  
 			        Rxcount++;
 			        continue;
 		       case -1:
 			        if (res >= 040 && res < 0100) 
 			        {
-				        c = res - 035; res = 040;  
+			 	        c = res - 035; res = 040;  
 						goto spaces;
 			        }
 			        if (res == 0100) 
 			        {
 				        c = 0;
+				        if (buf >= p+len)
+				            goto end;
 				        *buf++ = ZRESC; 
 				        Rxcount++;
 				        continue;
@@ -451,8 +460,10 @@ spaces:
 				        goto end;
 			        while ( --res >= 0)
 			        {
-				        *buf++ = res;
-				        Rxcount++;
+			            if (buf >= p+len)
+			                goto end;
+			            *buf++ = res;
+			            Rxcount++;
 			        }
 			        c = 0;  continue;
 		        }
@@ -611,7 +622,7 @@ static rt_int16_t zget_bin_header(rt_uint8_t *hdr)
 	crc = updcrc16(res, crc);
 	if (crc & 0xFFFF) 
 	{
-		rt_kprintf("CRC error\n");
+		rt_kprintf("CRC error (calculated CRC: 0x%04X)\n", crc);
 		return -RT_ERROR;
 	}
 
@@ -648,7 +659,7 @@ static rt_int16_t zget_bin_fcs(rt_uint8_t *hdr)
 	if (crc != 0xDEBB20E3)       
 	{
 #ifdef ZDEBUG
-		rt_kprintf("CRC error\n");
+		rt_kprintf("CRC error (calculated CRC32: 0x%08X, expected 0xDEBB20E3)\n", crc);
 #endif
 		return -RT_ERROR;
 	}
@@ -684,7 +695,7 @@ rt_int16_t zget_hex_header(rt_uint8_t *hdr)
 	if (crc & 0xFFFF) 
 	{
 #ifdef ZDEBUG
-		rt_kprintf("error code : CRC error\r\n"); 
+		rt_kprintf("error code : CRC error (calculated CRC: 0x%04X)\r\n", crc); 
 #endif
 		return -RT_ERROR;
 	}
