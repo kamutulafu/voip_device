@@ -10,6 +10,7 @@
 #include "wifi_manager.h"
 #include "asr_xfyun.h"
 #include "tts_xfyun.h"
+#include "voip_client.h"
 #include "esp_event.h"
 #include "esp_netif.h"
 
@@ -145,6 +146,15 @@ void app_main(void)
         .func = &cmd_tts_test,
     };
     ESP_ERROR_CHECK(console_register_cmd(&cmd_tts_test_cfg));
+
+    // Register WeChat Cloud VoIP test call command
+    const esp_console_cmd_t cmd_voip_call_cfg = {
+        .command = "voip_call",
+        .help = "Place a WeChat Cloud VoIP call to a user (OpenID) via the server (requires WiFi)",
+        .hint = "<device_id> <model_id> <appid> <sn_ticket> <openid> [payload]",
+        .func = &cmd_voip_call,
+    };
+    ESP_ERROR_CHECK(console_register_cmd(&cmd_voip_call_cfg));
 
     // Register wifi_join command
     const esp_console_cmd_t cmd_wifi_join_cfg = {
