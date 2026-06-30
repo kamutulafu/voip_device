@@ -49,3 +49,8 @@ CONFIG_TINYUSB_RHPORT_FS=y
 
 # Increase VFS max count for esp_video device registration
 CONFIG_VFS_MAX_COUNT=20
+
+# Allow skipping TLS server verification (used by the VoIP snTicket backend
+# request, mirroring the reference get_voip_command.py unverified context).
+CONFIG_ESP_TLS_INSECURE=y
+CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY=y

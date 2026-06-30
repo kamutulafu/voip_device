@@ -32,9 +32,28 @@ wx_error_t voip_client_call(const char *device_id, const char *model_id,
                             const char *openid, const char *payload, bool video);
 
 /**
+ * @brief Fetch a fresh snTicket from the backend provisioning service.
+ *
+ * Performs an HTTPS GET to:
+ *   {VOIP_BACKEND_HOST}/wechat-service/api/device/getWecooperSnTicket?deviceId=..&sid=..
+ * and extracts the snTicket from the JSON response.
+ *
+ * @param device_id  Device serial number / ID
+ * @param sid        Service/model id (passed as the "sid" query parameter)
+ * @param out        [out] Buffer that receives the NUL-terminated snTicket
+ * @param out_size   Size of out in bytes
+ * @return WXERROR_OK on success
+ */
+wx_error_t voip_fetch_sn_ticket(const char *device_id, const char *sid,
+                                char *out, size_t out_size);
+
+/**
  * @brief Console command: place a test VoIP call to a WeChat user.
  *
- * Usage: voip_call <device_id> <model_id> <appid> <sn_ticket> <openid> [payload]
+ * Most parameters default to the values baked into the firmware; the snTicket
+ * is fetched automatically from the backend. All defaults can be overridden.
+ *
+ * Usage: voip_call [openid] [device_id] [model_id] [appid] [payload]
  */
 int cmd_voip_call(int argc, char **argv);
 

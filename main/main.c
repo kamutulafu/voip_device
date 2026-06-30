@@ -150,8 +150,8 @@ void app_main(void)
     // Register WeChat Cloud VoIP test call command
     const esp_console_cmd_t cmd_voip_call_cfg = {
         .command = "voip_call",
-        .help = "Place a WeChat Cloud VoIP call to a user (OpenID) via the server (requires WiFi)",
-        .hint = "<device_id> <model_id> <appid> <sn_ticket> <openid> [payload]",
+        .help = "Place a WeChat Cloud VoIP call (snTicket auto-fetched; uses built-in defaults)",
+        .hint = "[openid] [device_id] [model_id] [appid] [payload]",
         .func = &cmd_voip_call,
     };
     ESP_ERROR_CHECK(console_register_cmd(&cmd_voip_call_cfg));
