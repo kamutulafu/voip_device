@@ -51,6 +51,18 @@ esp_err_t audio_set_volume(uint8_t volume);
  */
 esp_err_t audio_record_mono_pcm(int16_t **out_buf, size_t *out_num_samples, uint32_t duration_sec);
 
+/**
+ * @brief Read raw frames directly from the I2S RX channel (16 kHz/16-bit/stereo).
+ *        Ensures the audio system is initialized before reading.
+ *
+ * @param dest        Destination buffer
+ * @param size        Number of bytes to read
+ * @param bytes_read  [out] Number of bytes actually read
+ * @param timeout_ms  Read timeout in milliseconds
+ * @return ESP_OK on success
+ */
+esp_err_t audio_read_raw(void *dest, size_t size, size_t *bytes_read, uint32_t timeout_ms);
+
 // Console command functions
 int cmd_audio_record(int argc, char **argv);
 int cmd_audio_play(int argc, char **argv);

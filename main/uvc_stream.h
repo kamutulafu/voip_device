@@ -16,6 +16,13 @@ void uvc_return_stream_fb(void *fb);
 i2c_master_bus_handle_t uvc_get_i2c_bus_handle(void);
 void uvc_set_i2c_bus_handle(i2c_master_bus_handle_t handle);
 
+/**
+ * @brief Ensure the I2C bus and the esp_video pipeline (CSI/ISP) are initialized.
+ *        Idempotent: safe to call multiple times and from multiple features
+ *        (UVC streaming, VoIP media push). Does not open any V4L2 device.
+ */
+esp_err_t camera_ensure_video_init(void);
+
 int cmd_uvc_init(int argc, char **argv);
 int cmd_uvc_status(int argc, char **argv);
 

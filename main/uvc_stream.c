@@ -47,6 +47,7 @@ static uvc_t *s_uvc = NULL;
 static i2c_master_bus_handle_t g_i2c_bus_handle = NULL;
 
 static bool s_uvc_initialized = false;
+static bool s_video_inited = false;
 static bool s_uvc_streaming = false;
 static int s_stream_width = 0;
 static int s_stream_height = 0;
@@ -463,6 +464,53 @@ void uvc_set_i2c_bus_handle(i2c_master_bus_handle_t handle)
     g_i2c_bus_handle = handle;
 }
 
+esp_err_t camera_ensure_video_init(void)
+{
+    if (s_video_inited) {
+        return ESP_OK;
+    }
+
+    if (g_i2c_bus_handle == NULL) {
+        ESP_LOGI(TAG, "Initializing I2C Master Bus (SDA=7, SCL=8) for camera...");
+        i2c_master_bus_config_t i2c_bus_cfg = {
+            .clk_source = I2C_CLK_SRC_DEFAULT,
+            .i2c_port = 0,
+            .scl_io_num = 8,
+            .sda_io_num = 7,
+            .glitch_ignore_cnt = 7,
+            .flags.enable_internal_pullup = true,
+        };
+        esp_err_t err = i2c_new_master_bus(&i2c_bus_cfg, &g_i2c_bus_handle);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to initialize I2C bus: %s", esp_err_to_name(err));
+            return err;
+        }
+    }
+
+    ESP_LOGI(TAG, "Initializing esp_video (CSI, ISP)...");
+    esp_video_init_csi_config_t csi_config = {
+        .sccb_config = {
+            .init_sccb = false,
+            .i2c_handle = g_i2c_bus_handle,
+            .freq = 100000,
+        },
+        .reset_pin = -1,
+        .pwdn_pin = -1,
+        .dont_init_ldo = false,
+    };
+    esp_video_init_config_t cam_config = {
+        .csi = &csi_config,
+    };
+    esp_err_t err = esp_video_init(&cam_config);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize esp_video: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    s_video_inited = true;
+    return ESP_OK;
+}
+
 bool uvc_is_initialized(void)
 {
     return s_uvc_initialized;
@@ -515,47 +563,12 @@ int cmd_uvc_init(int argc, char **argv)
     printf("Routing USB-OTG to GPIO24/GPIO25 (USB FS PHY 0)...\n");
     usb_serial_jtag_ll_phy_select(1);
 
-    // Initialize I2C Bus
-    esp_err_t err = ESP_OK;
-    if (g_i2c_bus_handle == NULL) {
-        printf("Initializing I2C Master Bus (SDA=7, SCL=8)...\n");
-        i2c_master_bus_config_t i2c_bus_cfg = {
-            .clk_source = I2C_CLK_SRC_DEFAULT,
-            .i2c_port = 0,
-            .scl_io_num = 8,
-            .sda_io_num = 7,
-            .glitch_ignore_cnt = 7,
-            .flags.enable_internal_pullup = true,
-        };
-        err = i2c_new_master_bus(&i2c_bus_cfg, &g_i2c_bus_handle);
-        if (err != ESP_OK) {
-            printf("Failed to initialize I2C bus: %s\n", esp_err_to_name(err));
-            return 1;
-        }
-    } else {
-        printf("I2C Master Bus already initialized, sharing it.\n");
+    // Initialize I2C bus + esp_video pipeline (shared, idempotent)
+    esp_err_t err = camera_ensure_video_init();
+    if (err != ESP_OK) {
+        printf("Failed to initialize camera video pipeline: %s\n", esp_err_to_name(err));
+        return 1;
     }
-
-    // Initialize Video Pipeline
-    printf("Initializing esp_video (CSI, ISP, JPEG Enc)...\n");
-    esp_video_init_csi_config_t csi_config = {
-        .sccb_config = {
-            .init_sccb = false,
-            .i2c_handle = g_i2c_bus_handle,
-            .freq = 100000,
-        },
-        .reset_pin = -1,
-        .pwdn_pin = -1,
-        .dont_init_ldo = false,
-     };
-     esp_video_init_config_t cam_config = {
-         .csi = &csi_config,
-     };
-     err = esp_video_init(&cam_config);
-     if (err != ESP_OK) {
-         printf("Failed to initialize esp_video: %s\n", esp_err_to_name(err));
-         return 1;
-     }
 
      s_uvc = calloc(1, sizeof(uvc_t));
      if (!s_uvc) {

@@ -364,6 +364,20 @@ esp_err_t audio_record_to_file(const char *filename, uint32_t duration_sec)
     return ESP_OK;
 }
 
+esp_err_t audio_read_raw(void *dest, size_t size, size_t *bytes_read, uint32_t timeout_ms)
+{
+    if (dest == NULL || size == 0 || bytes_read == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!s_audio_initialized) {
+        esp_err_t err = audio_init();
+        if (err != ESP_OK) {
+            return err;
+        }
+    }
+    return i2s_channel_read(rx_handle, dest, size, bytes_read, pdMS_TO_TICKS(timeout_ms));
+}
+
 esp_err_t audio_record_mono_pcm(int16_t **out_buf, size_t *out_num_samples, uint32_t duration_sec)
 {
     if (out_buf == NULL || out_num_samples == NULL || duration_sec == 0) {

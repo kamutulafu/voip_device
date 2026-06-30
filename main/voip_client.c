@@ -15,6 +15,7 @@
 #include "cJSON.h"
 
 #include "voip_client.h"
+#include "voip_media.h"
 
 static const char *TAG = "voip_client";
 
@@ -102,6 +103,14 @@ wx_error_t voip_client_call(const char *device_id, const char *model_id,
     ret = wx_cloudvoip_client_call(room_type, &caller, &callee, "",
                                    payload ? payload : "");
     ESP_LOGI(TAG, "wx_cloudvoip_client_call returned %d", ret);
+
+    if (ret == WXERROR_OK) {
+        /* Call request accepted. Read the token the SDK persisted, report it
+         * to the cloud server (so it joins the WeChat room) and start media
+         * push. Keep the SDK initialized for the duration of the call. */
+        voip_media_on_call_connected(payload ? payload : "");
+        return WXERROR_OK;
+    }
 
 out:
     wx_destory();
