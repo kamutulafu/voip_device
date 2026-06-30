@@ -9,6 +9,7 @@
 #include "audio_driver.h"
 #include "wifi_manager.h"
 #include "asr_xfyun.h"
+#include "tts_xfyun.h"
 #include "esp_event.h"
 #include "esp_netif.h"
 
@@ -135,6 +136,15 @@ void app_main(void)
         .func = &cmd_asr_test,
     };
     ESP_ERROR_CHECK(console_register_cmd(&cmd_asr_test_cfg));
+
+    // Register text-to-speech (TTS) test command
+    const esp_console_cmd_t cmd_tts_test_cfg = {
+        .command = "tts_test",
+        .help = "Synthesize text to speech using iFlytek and play it on the speaker (requires WiFi)",
+        .hint = "<text...>",
+        .func = &cmd_tts_test,
+    };
+    ESP_ERROR_CHECK(console_register_cmd(&cmd_tts_test_cfg));
 
     // Register wifi_join command
     const esp_console_cmd_t cmd_wifi_join_cfg = {
