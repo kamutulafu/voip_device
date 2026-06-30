@@ -10,6 +10,7 @@
 #include "driver/i2c_master.h"
 #include "esp_system.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "uvc_stream.h"
 
 static const char *TAG = "audio_driver";
@@ -360,6 +361,65 @@ esp_err_t audio_record_to_file(const char *filename, uint32_t duration_sec)
     fclose(f);
 
     ESP_LOGI(TAG, "Recording stopped. Recorded %d bytes to %s", (int)total_recorded_bytes, filename);
+    return ESP_OK;
+}
+
+esp_err_t audio_record_mono_pcm(int16_t **out_buf, size_t *out_num_samples, uint32_t duration_sec)
+{
+    if (out_buf == NULL || out_num_samples == NULL || duration_sec == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (!s_audio_initialized) {
+        esp_err_t err = audio_init();
+        if (err != ESP_OK) {
+            return err;
+        }
+    }
+
+    // The I2S channel is configured as 16-bit stereo. We capture stereo frames
+    // and down-mix to mono by keeping the left channel only, which is what the
+    // iFlytek IAT service expects (16 kHz / 16-bit / mono PCM).
+    const size_t mono_samples = (size_t)AUDIO_SAMPLE_RATE * duration_sec;
+    int16_t *mono = heap_caps_malloc(mono_samples * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (mono == NULL) {
+        mono = malloc(mono_samples * sizeof(int16_t));
+    }
+    if (mono == NULL) {
+        ESP_LOGE(TAG, "Failed to allocate %u bytes for mono PCM buffer",
+                 (unsigned)(mono_samples * sizeof(int16_t)));
+        return ESP_ERR_NO_MEM;
+    }
+
+    const size_t stereo_buf_bytes = 4096; // 1024 stereo frames per read
+    int16_t *stereo = malloc(stereo_buf_bytes);
+    if (stereo == NULL) {
+        free(mono);
+        return ESP_ERR_NO_MEM;
+    }
+
+    ESP_LOGI(TAG, "Recording mono PCM for %u second(s)...", (unsigned)duration_sec);
+
+    size_t mono_written = 0;
+    while (mono_written < mono_samples) {
+        size_t bytes_read = 0;
+        esp_err_t ret = i2s_channel_read(rx_handle, stereo, stereo_buf_bytes, &bytes_read, pdMS_TO_TICKS(1000));
+        if (ret != ESP_OK || bytes_read == 0) {
+            ESP_LOGW(TAG, "I2S read timeout or error: %s", esp_err_to_name(ret));
+            continue;
+        }
+
+        size_t stereo_frames = bytes_read / (2 * sizeof(int16_t)); // L+R per frame
+        for (size_t i = 0; i < stereo_frames && mono_written < mono_samples; i++) {
+            mono[mono_written++] = stereo[2 * i]; // keep left channel
+        }
+    }
+
+    free(stereo);
+
+    *out_buf = mono;
+    *out_num_samples = mono_written;
+    ESP_LOGI(TAG, "Recording done. Captured %u mono samples", (unsigned)mono_written);
     return ESP_OK;
 }
 

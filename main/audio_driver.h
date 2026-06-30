@@ -2,6 +2,8 @@
 #define AUDIO_DRIVER_H
 
 #include "esp_err.h"
+#include <stddef.h>
+#include <stdint.h>
 
 /**
  * @brief Initialize the audio system (I2C, ES8311 Codec, and I2S)
@@ -35,6 +37,19 @@ esp_err_t audio_play_from_file(const char *filename);
  * @return ESP_OK on success
  */
 esp_err_t audio_set_volume(uint8_t volume);
+
+/**
+ * @brief Record audio from the microphone into a 16 kHz / 16-bit mono PCM buffer.
+ *
+ * The buffer is allocated with malloc (SPIRAM-capable heap) and must be freed
+ * by the caller with free().
+ *
+ * @param out_buf         [out] Pointer that receives the allocated PCM buffer
+ * @param out_num_samples [out] Pointer that receives the number of int16 samples
+ * @param duration_sec    Duration of the recording in seconds
+ * @return ESP_OK on success
+ */
+esp_err_t audio_record_mono_pcm(int16_t **out_buf, size_t *out_num_samples, uint32_t duration_sec);
 
 // Console command functions
 int cmd_audio_record(int argc, char **argv);

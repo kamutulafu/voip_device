@@ -8,6 +8,7 @@
 #include "uvc_stream.h"
 #include "audio_driver.h"
 #include "wifi_manager.h"
+#include "asr_xfyun.h"
 #include "esp_event.h"
 #include "esp_netif.h"
 
@@ -125,6 +126,15 @@ void app_main(void)
         .func = &cmd_audio_play,
     };
     ESP_ERROR_CHECK(console_register_cmd(&cmd_audio_play_cfg));
+
+    // Register speech recognition (ASR) test command
+    const esp_console_cmd_t cmd_asr_test_cfg = {
+        .command = "asr_test",
+        .help = "Record from the microphone and convert speech to text using iFlytek (requires WiFi)",
+        .hint = "[duration_sec]",
+        .func = &cmd_asr_test,
+    };
+    ESP_ERROR_CHECK(console_register_cmd(&cmd_asr_test_cfg));
 
     // Register wifi_join command
     const esp_console_cmd_t cmd_wifi_join_cfg = {
