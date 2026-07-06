@@ -190,8 +190,8 @@ static void media_push_task(void *pvParameter)
 
     void *cam_buffers[2] = {NULL, NULL};
     uint8_t *m2m_cap_buffer = NULL;
-    uint32_t cam_width = 800;
-    uint32_t cam_height = 1280;
+    uint32_t cam_width = 640;
+    uint32_t cam_height = 480;
 
     if (cam_fd < 0 || m2m_fd < 0) {
         ESP_LOGW(TAG, "Failed to open %s or %s; video disabled (audio only)",
@@ -348,6 +348,31 @@ static void media_push_task(void *pvParameter)
                             m2m_cap_buf.memory = V4L2_MEMORY_MMAP;
 
                             if (ioctl(m2m_fd, VIDIOC_DQBUF, &m2m_cap_buf) == 0) {
+                                static FILE *dump_file = NULL;
+                                static size_t dumped = 0;
+                                static bool file_closed = false;
+                                
+                                if (!dump_file && !file_closed) {
+                                    dump_file = fopen("/spiffs/dump.h264", "w");
+                                    if (dump_file) {
+                                        ESP_LOGI(TAG, "Opened /spiffs/dump.h264 for writing");
+                                    } else {
+                                        file_closed = true;
+                                    }
+                                }
+                                
+                                if (dump_file) {
+                                    if (dumped < 500 * 1024) {
+                                        fwrite(m2m_cap_buffer, 1, m2m_cap_buf.bytesused, dump_file);
+                                        dumped += m2m_cap_buf.bytesused;
+                                    } else {
+                                        fclose(dump_file);
+                                        dump_file = NULL;
+                                        file_closed = true;
+                                        ESP_LOGI(TAG, "Finished dumping 500KB of H.264 to SPIFFS");
+                                    }
+                                }
+
                                 int ret = send_media_packet(sock, 1, m2m_cap_buffer,
                                                             m2m_cap_buf.bytesused, use_http);
                                 ioctl(m2m_fd, VIDIOC_QBUF, &m2m_cap_buf);
@@ -449,7 +474,7 @@ static void report_token(const char *server_ip, const char *token, const char *p
     struct sockaddr_in dest_addr;
     dest_addr.sin_addr.s_addr = inet_addr(server_ip);
     dest_addr.sin_family = AF_INET;
-    dest_addr.sin_port = htons(80); /* route through Nginx proxy */
+    dest_addr.sin_port = htons(9001); /* connect to auto_voip_server */
 
     int sock = socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
     if (sock < 0) {
@@ -457,7 +482,7 @@ static void report_token(const char *server_ip, const char *token, const char *p
         return;
     }
 
-    ESP_LOGI(TAG, "Reporting token to %s:80 ...", server_ip);
+    ESP_LOGI(TAG, "Reporting token to %s:9001 ...", server_ip);
     if (connect(sock, (struct sockaddr *)&dest_addr, sizeof(dest_addr)) == 0) {
         char *req = malloc(1024);
         if (req) {
@@ -478,7 +503,7 @@ static void report_token(const char *server_ip, const char *token, const char *p
             ESP_LOGI(TAG, "Token reported successfully");
         }
     } else {
-        ESP_LOGE(TAG, "report_token: connect to %s:80 failed", server_ip);
+        ESP_LOGE(TAG, "report_token: connect to %s:9001 failed", server_ip);
     }
     close(sock);
 }
@@ -507,10 +532,10 @@ void voip_media_on_call_connected(const char *payload)
     /* 1) Tell the cloud server to join the WeChat room using our token. */
     report_token(server_ip, token, payload);
 
-    /* 2) Start pushing media to the server (port 80 -> Nginx proxy). */
+    /* 2) Start pushing media to the server (port 8081 -> media_recv_server). */
     char *media_addr = malloc(128);
     if (media_addr) {
-        snprintf(media_addr, 128, "%s:80", server_ip);
+        snprintf(media_addr, 128, "%s:8081", server_ip);
         ESP_LOGI(TAG, "Scheduling media push to %s in 3s...", media_addr);
         vTaskDelay(pdMS_TO_TICKS(3000));
         if (xTaskCreate(media_push_task, "voip_media_push", 8192, media_addr, 5, NULL) != pdPASS) {

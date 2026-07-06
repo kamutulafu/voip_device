@@ -25,7 +25,7 @@ static const char *TAG = "voip_client";
 #define VOIP_DEFAULT_APPID      "wx769bf6a5775ba85e"
 #define VOIP_DEFAULT_OPENID     "o1s5V7MPSGlDymTQKCqKgcYCPd6Q"
 /* Plain (non-JSON) payload string; must match the cloud server's join payload. */
-#define VOIP_DEFAULT_PAYLOAD    "101.42.103.144"
+#define VOIP_DEFAULT_PAYLOAD    "180.76.139.70"
 
 /* Backend that issues snTickets. */
 #define VOIP_BACKEND_HOST       "gateway.tdskynet.com"
