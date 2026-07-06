@@ -202,11 +202,11 @@ static void media_push_task(void *pvParameter)
         /* 1) Camera capture format (YUV420) */
         struct v4l2_format fmt = {0};
         fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-        fmt.fmt.pix.width = cam_width;
-        fmt.fmt.pix.height = cam_height;
+        fmt.fmt.pix.width = 800;
+        fmt.fmt.pix.height = 640;
         fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_YUV420;
         if (ioctl(cam_fd, VIDIOC_S_FMT, &fmt) < 0) {
-            ESP_LOGW(TAG, "Camera VIDIOC_S_FMT YUV420 failed");
+            ESP_LOGW(TAG, "Camera VIDIOC_S_FMT 800x640 YUV420 failed");
         }
 
         memset(&fmt, 0, sizeof(fmt));
