@@ -16,16 +16,9 @@
 
 #include "voip_client.h"
 #include "voip_media.h"
+#include "device_config.h"
 
 static const char *TAG = "voip_client";
-
-/* ---- Default configuration (mirrors local_server/get_voip_command.py) ---- */
-#define VOIP_DEFAULT_DEVICE_ID  "RD2600000001"
-#define VOIP_DEFAULT_MODEL_ID   "YiROQwsClOLubDM-ej_isQ"   /* a.k.a. "sid" */
-#define VOIP_DEFAULT_APPID      "wx769bf6a5775ba85e"
-#define VOIP_DEFAULT_OPENID     "o1s5V7MPSGlDymTQKCqKgcYCPd6Q"
-/* Plain (non-JSON) payload string; must match the cloud server's join payload. */
-#define VOIP_DEFAULT_PAYLOAD    "180.76.139.70"
 
 /* Backend that issues snTickets. */
 #define VOIP_BACKEND_HOST       "gateway.tdskynet.com"
@@ -264,11 +257,11 @@ int cmd_voip_call(int argc, char **argv)
 {
     /* All parameters default to the firmware-baked values; any can be
      * overridden positionally. The snTicket is always fetched at runtime. */
-    const char *openid    = (argc >= 2) ? argv[1] : VOIP_DEFAULT_OPENID;
-    const char *device_id = (argc >= 3) ? argv[2] : VOIP_DEFAULT_DEVICE_ID;
-    const char *model_id  = (argc >= 4) ? argv[3] : VOIP_DEFAULT_MODEL_ID;
-    const char *appid     = (argc >= 5) ? argv[4] : VOIP_DEFAULT_APPID;
-    const char *payload   = (argc >= 6) ? argv[5] : VOIP_DEFAULT_PAYLOAD;
+    const char *openid    = (argc >= 2) ? argv[1] : VOIP_OPENID;
+    const char *device_id = argc > 2 ? argv[2] : DEVICE_ID;
+    const char *model_id  = argc > 3 ? argv[3] : VOIP_MODEL_ID;
+    const char *appid     = argc > 4 ? argv[4] : VOIP_APPID;
+    const char *payload   = argc > 5 ? argv[5] : VOIP_PAYLOAD;
 
     printf("Fetching snTicket from %s ...\n", VOIP_BACKEND_HOST);
     char sn_ticket[256] = {0};

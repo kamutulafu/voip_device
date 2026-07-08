@@ -13,6 +13,7 @@
 #include "voip_client.h"
 #include "esp_event.h"
 #include "esp_netif.h"
+#include "api_test.h"
 
 int cmd_zmodem_send(int argc, char **argv);
 int cmd_zmodem_recv(int argc, char **argv);
@@ -164,6 +165,9 @@ void app_main(void)
         .func = &cmd_wifi_join,
     };
     ESP_ERROR_CHECK(console_register_cmd(&cmd_wifi_join_cfg));
+
+    // Register API test command
+    register_api_test_cmd();
 
     // Trigger auto-connection to saved WiFi in background
     wifi_manager_start_autoconnect();
