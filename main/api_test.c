@@ -6,6 +6,7 @@
 #include "console.h"
 #include "api_test.h"
 #include "device_config.h"
+#include "api_crypto.h"
 
 static const char* TAG = "api_test";
 static char current_sid[64] = "test-session-id";
@@ -21,9 +22,27 @@ static void print_result(const char* name, api_result_t *res) {
     ESP_LOGI(TAG, "Code: %s", res->code ? res->code : "NULL");
     ESP_LOGI(TAG, "Msg: %s", res->msg ? res->msg : "NULL");
     if (res->data) {
-        char *data_str = cJSON_PrintUnformatted(res->data);
-        ESP_LOGI(TAG, "Data: %s", data_str);
-        free(data_str);
+        if (cJSON_IsString(res->data)) {
+            ESP_LOGI(TAG, "Data is a string (possibly encrypted). Attempting RSA decryption...");
+            char *decrypted = api_crypto_rsa_decrypt(res->data->valuestring);
+            if (decrypted) {
+                ESP_LOGI(TAG, "Decrypted plaintext: %s", decrypted);
+                cJSON *decrypted_json = cJSON_Parse(decrypted);
+                if (decrypted_json) {
+                    char *formatted = cJSON_Print(decrypted_json);
+                    ESP_LOGI(TAG, "Decrypted JSON Data:\n%s", formatted);
+                    free(formatted);
+                    cJSON_Delete(decrypted_json);
+                }
+                free(decrypted);
+            } else {
+                ESP_LOGW(TAG, "Decryption failed, raw string: %s", res->data->valuestring);
+            }
+        } else {
+            char *data_str = cJSON_PrintUnformatted(res->data);
+            ESP_LOGI(TAG, "Data: %s", data_str);
+            free(data_str);
+        }
     } else if (res->raw_body) {
         ESP_LOGI(TAG, "Raw Body: %s", res->raw_body);
     }

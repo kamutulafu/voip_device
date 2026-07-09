@@ -1,3 +1,3 @@
-idf_component_register(SRCS "api_test.c" "api_service.c" "voip_client.c" "voip_https_impl.c" "voip_os_impl.c" "uvc_stream.c" "main.c" "console.c" "spiffs_storage.c" "camera_capture.c" "audio_driver.c" "wifi_manager.c" "asr_xfyun.c" "tts_xfyun.c" "voip_client.c" "voip_os_impl.c" "voip_https_impl.c" "voip_media.c"
+idf_component_register(SRCS "api_test.c" "api_service.c" "voip_client.c" "voip_https_impl.c" "voip_os_impl.c" "uvc_stream.c" "main.c" "console.c" "spiffs_storage.c" "camera_capture.c" "audio_driver.c" "wifi_manager.c" "asr_xfyun.c" "tts_xfyun.c" "voip_client.c" "voip_os_impl.c" "voip_https_impl.c" "voip_media.c" "api_crypto.c"
                     INCLUDE_DIRS "."
                     PRIV_REQUIRES espressif__esp_video espressif__usb_device_uvc espressif__tinyusb console nvs_flash spiffs esp_driver_uart zmodem esp_driver_i2s esp_driver_gpio esp_driver_i2c esp_wifi esp_netif esp_event esp_websocket_client esp-tls mbedtls json esp_http_client wx_voip)
