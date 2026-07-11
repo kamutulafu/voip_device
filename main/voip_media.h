@@ -26,6 +26,13 @@ void voip_media_on_call_connected(const char *payload);
  */
 int voip_get_call_status(const char *payload);
 
+/**
+ * @brief Send an HTTP GET request to /hangup on the proxy server's status port (9001).
+ *
+ * @param server_ip The IP address of the proxy server.
+ */
+void voip_send_hangup(const char *server_ip);
+
 #ifdef __cplusplus
 }
 #endif

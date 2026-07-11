@@ -1,6 +1,7 @@
 #ifndef VOIP_CLIENT_H
 #define VOIP_CLIENT_H
 
+#include <stdbool.h>
 #include "error.h"
 #include "wxvoip_client.h"
 
@@ -56,6 +57,11 @@ wx_error_t voip_fetch_sn_ticket(const char *device_id, const char *sid,
  * Usage: voip_call [openid] [device_id] [model_id] [appid] [payload]
  */
 int cmd_voip_call(int argc, char **argv);
+
+/**
+ * @brief Destroy the WeChat Cloud VoIP SDK and reset initialization state.
+ */
+void voip_client_destroy(void);
 
 #ifdef __cplusplus
 }

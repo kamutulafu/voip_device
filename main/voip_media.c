@@ -14,6 +14,7 @@
  */
 
 #include "voip_media.h"
+#include "voip_client.h"
 #include "audio_driver.h"
 #include "uvc_stream.h"
 
@@ -132,6 +133,7 @@ static void media_push_task(void *pvParameter)
     if (!colon) {
         ESP_LOGE(TAG, "Invalid IP:PORT format");
         free(ip_port);
+        voip_client_destroy();
         vTaskDelete(NULL);
         return;
     }
@@ -144,25 +146,30 @@ static void media_push_task(void *pvParameter)
     dest_addr.sin_family = AF_INET;
     dest_addr.sin_port = htons(port);
 
-    int sock = socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
+    int sock = -1;
+    bool use_http = false;
+    int cam_fd = -1;
+    int m2m_fd = -1;
+    void *cam_buffers[2] = {NULL, NULL};
+    uint8_t *m2m_cap_buffer = NULL;
+    uint32_t cam_width = 640;
+    uint32_t cam_height = 480;
+    uint8_t *audio_buf = NULL;
+
+    sock = socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
     if (sock < 0) {
         ESP_LOGE(TAG, "Socket creation failed");
-        free(ip_port);
-        vTaskDelete(NULL);
-        return;
+        goto cleanup;
     }
 
     ESP_LOGI(TAG, "Media push connecting to %s:%d...", ip, port);
     if (connect(sock, (struct sockaddr *)&dest_addr, sizeof(dest_addr)) != 0) {
         ESP_LOGE(TAG, "Media socket connect failed");
-        close(sock);
-        free(ip_port);
-        vTaskDelete(NULL);
-        return;
+        goto cleanup;
     }
     ESP_LOGI(TAG, "Connected! Start pushing media...");
 
-    bool use_http = (port == 80 || port == 443);
+    use_http = (port == 80 || port == 443);
     if (use_http) {
         char http_hdr[512];
         snprintf(http_hdr, sizeof(http_hdr),
@@ -173,10 +180,7 @@ static void media_push_task(void *pvParameter)
                  "Connection: close\r\n\r\n");
         if (send(sock, http_hdr, strlen(http_hdr), 0) < 0) {
             ESP_LOGE(TAG, "Failed to send HTTP headers");
-            close(sock);
-            free(ip_port);
-            vTaskDelete(NULL);
-            return;
+            goto cleanup;
         }
     }
 
@@ -185,13 +189,8 @@ static void media_push_task(void *pvParameter)
         ESP_LOGW(TAG, "esp_video init failed; pushing audio only");
     }
 
-    int cam_fd = open(VOIP_CAM_DEV_PATH, O_RDWR);
-    int m2m_fd = open(VOIP_H264_DEV_PATH, O_RDWR);
-
-    void *cam_buffers[2] = {NULL, NULL};
-    uint8_t *m2m_cap_buffer = NULL;
-    uint32_t cam_width = 640;
-    uint32_t cam_height = 480;
+    cam_fd = open(VOIP_CAM_DEV_PATH, O_RDWR);
+    m2m_fd = open(VOIP_H264_DEV_PATH, O_RDWR);
 
     if (cam_fd < 0 || m2m_fd < 0) {
         ESP_LOGW(TAG, "Failed to open %s or %s; video disabled (audio only)",
@@ -308,12 +307,42 @@ static void media_push_task(void *pvParameter)
     }
 
     size_t bytes_read = 0;
-    uint8_t *audio_buf = malloc(1024);
+    audio_buf = malloc(1024);
+    if (!audio_buf) {
+        ESP_LOGE(TAG, "Failed to allocate audio buffer");
+        goto cleanup;
+    }
 
     const int64_t video_interval_us = 1000000 / VOIP_VIDEO_FPS;
     int64_t last_video_us = 0;
 
+    bool is_answered = false;
+    int64_t call_start_time_us = esp_timer_get_time();
+    int64_t last_status_check_us = 0;
+
     while (audio_buf) {
+        int64_t now_us = esp_timer_get_time();
+
+        // 1. Check call status every 1s before answered
+        if (!is_answered && (now_us - last_status_check_us >= 1000000)) {
+            last_status_check_us = now_us;
+            int status = voip_get_call_status(ip);
+            if (status == 2) {
+                is_answered = true;
+                ESP_LOGI(TAG, "VoIP call answered! (Talking)");
+            } else if (status > 2 && status != 5) {
+                ESP_LOGI(TAG, "VoIP call ended by remote with status %d", status);
+                break;
+            }
+        }
+
+        // 2. Check 50 seconds auto-hangup if not answered
+        if (!is_answered && (now_us - call_start_time_us >= 50000000)) {
+            ESP_LOGW(TAG, "VoIP call not answered for 50 seconds. Auto hanging up...");
+            voip_send_hangup(ip);
+            break;
+        }
+
         /* Audio: always pushed in real time */
         if (audio_read_raw(audio_buf, 1024, &bytes_read, portMAX_DELAY) == ESP_OK && bytes_read > 0) {
             if (send_media_packet(sock, 0, audio_buf, bytes_read, use_http) < 0) {
@@ -327,11 +356,11 @@ static void media_push_task(void *pvParameter)
                 cap_buf.memory = V4L2_MEMORY_MMAP;
 
                 if (ioctl(cam_fd, VIDIOC_DQBUF, &cap_buf) == 0) {
-                    int64_t now_us = esp_timer_get_time();
-                    bool push_video = (now_us - last_video_us) >= video_interval_us;
+                    int64_t now_us_vid = esp_timer_get_time();
+                    bool push_video = (now_us_vid - last_video_us) >= video_interval_us;
 
                     if (push_video) {
-                        last_video_us = now_us;
+                        last_video_us = now_us_vid;
 
                         struct v4l2_buffer m2m_out_buf;
                         memset(&m2m_out_buf, 0, sizeof(m2m_out_buf));
@@ -392,6 +421,7 @@ static void media_push_task(void *pvParameter)
         }
     }
 
+cleanup:
     ESP_LOGW(TAG, "Media push stopped");
     
     /* Give the cloud proxy server some time to process the C program exit and parse the final status */
@@ -417,8 +447,11 @@ static void media_push_task(void *pvParameter)
         ESP_LOGI(TAG, "====== VoIP Call Result: [%d] ======", final_status);
     }
 
-    if (use_http) {
-        send(sock, "0\r\n\r\n", 5, 0);
+    if (sock >= 0) {
+        if (use_http) {
+            send(sock, "0\r\n\r\n", 5, 0);
+        }
+        close(sock);
     }
     if (cam_fd >= 0) {
         int type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
@@ -432,9 +465,14 @@ static void media_push_task(void *pvParameter)
         ioctl(m2m_fd, VIDIOC_STREAMOFF, &type);
         close(m2m_fd);
     }
-    close(sock);
-    free(audio_buf);
+    if (audio_buf) {
+        free(audio_buf);
+    }
     free(ip_port);
+
+    // Clean up WeChat VoIP SDK resources
+    voip_client_destroy();
+
     vTaskDelete(NULL);
 }
 
@@ -621,4 +659,38 @@ int voip_get_call_status(const char *payload_or_ip)
     }
     close(sock);
     return status;
+}
+
+void voip_send_hangup(const char *server_ip)
+{
+    if (!server_ip || server_ip[0] == '\0') return;
+
+    struct sockaddr_in dest_addr;
+    dest_addr.sin_addr.s_addr = inet_addr(server_ip);
+    dest_addr.sin_family = AF_INET;
+    dest_addr.sin_port = htons(9001);
+
+    int sock = socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
+    if (sock < 0) {
+        ESP_LOGE(TAG, "voip_send_hangup: socket failed");
+        return;
+    }
+
+    if (connect(sock, (struct sockaddr *)&dest_addr, sizeof(dest_addr)) == 0) {
+        char req[128];
+        snprintf(req, sizeof(req),
+                 "GET /hangup HTTP/1.1\r\n"
+                 "Host: %s\r\n"
+                 "Connection: close\r\n\r\n",
+                 server_ip);
+        
+        send_all(sock, req, strlen(req));
+        
+        char resp[128];
+        recv(sock, resp, sizeof(resp) - 1, 0); // read response to ensure it's sent
+        ESP_LOGI(TAG, "Sent hangup request to server");
+    } else {
+        ESP_LOGE(TAG, "voip_send_hangup: connect to %s:9001 failed", server_ip);
+    }
+    close(sock);
 }

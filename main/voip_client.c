@@ -285,3 +285,12 @@ int cmd_voip_call(int argc, char **argv)
     printf("VoIP call request sent successfully.\n");
     return 0;
 }
+
+void voip_client_destroy(void)
+{
+    if (s_initialized) {
+        wx_destory();
+        s_initialized = false;
+        ESP_LOGI(TAG, "WeChat VoIP SDK destroyed");
+    }
+}
