@@ -393,6 +393,30 @@ static void media_push_task(void *pvParameter)
     }
 
     ESP_LOGW(TAG, "Media push stopped");
+    
+    /* Give the cloud proxy server some time to process the C program exit and parse the final status */
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    
+    /* Fetch and print the final call status */
+    int final_status = voip_get_call_status(ip);
+    if (final_status == 2) {
+        ESP_LOGI(TAG, "====== VoIP Call Result: [2] 接通 (TALKING) ======");
+    } else if (final_status == 3) {
+        ESP_LOGI(TAG, "====== VoIP Call Result: [3] 拒接未接听 (REJECTED) ======");
+    } else if (final_status == 9) {
+        ESP_LOGI(TAG, "====== VoIP Call Result: [9] 超时未接听 (TIMEOUT) ======");
+    } else if (final_status == 8) {
+        ESP_LOGI(TAG, "====== VoIP Call Result: [8] 占线未接听 (BUSY) ======");
+    } else if (final_status == 7) {
+        ESP_LOGI(TAG, "====== VoIP Call Result: [7] 异常/关机 (ABORTED) ======");
+    } else if (final_status == 6) {
+        ESP_LOGI(TAG, "====== VoIP Call Result: [6] 小程序端挂断 (HANGUP_BY_CALLEE) ======");
+    } else if (final_status == 5) {
+        ESP_LOGI(TAG, "====== VoIP Call Result: [5] 设备端挂断 (HANGUP_BY_CALLER) ======");
+    } else {
+        ESP_LOGI(TAG, "====== VoIP Call Result: [%d] ======", final_status);
+    }
+
     if (use_http) {
         send(sock, "0\r\n\r\n", 5, 0);
     }
@@ -543,4 +567,58 @@ void voip_media_on_call_connected(const char *payload)
             free(media_addr);
         }
     }
+}
+
+int voip_get_call_status(const char *payload_or_ip)
+{
+    if (!payload_or_ip) return -1;
+
+    char server_ip[64] = {0};
+    
+    if (strchr(payload_or_ip, '.') && !strchr(payload_or_ip, '{')) {
+        // It's already a raw IP
+        strlcpy(server_ip, payload_or_ip, sizeof(server_ip));
+    } else {
+        // It's a JSON payload
+        parse_server_ip(payload_or_ip, server_ip, sizeof(server_ip));
+    }
+    
+    if (server_ip[0] == '\0') {
+        return -1;
+    }
+
+    struct sockaddr_in dest_addr;
+    dest_addr.sin_addr.s_addr = inet_addr(server_ip);
+    dest_addr.sin_family = AF_INET;
+    dest_addr.sin_port = htons(9001);
+
+    int sock = socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
+    if (sock < 0) {
+        return -1;
+    }
+
+    int status = -1;
+    if (connect(sock, (struct sockaddr *)&dest_addr, sizeof(dest_addr)) == 0) {
+        char req[128];
+        snprintf(req, sizeof(req),
+                 "GET /status HTTP/1.1\r\n"
+                 "Host: %s\r\n"
+                 "Connection: close\r\n\r\n",
+                 server_ip);
+        
+        send_all(sock, req, strlen(req));
+
+        char resp[512];
+        int n = recv(sock, resp, sizeof(resp) - 1, 0);
+        if (n > 0) {
+            resp[n] = '\0';
+            char *body = strstr(resp, "\r\n\r\n");
+            if (body) {
+                body += 4;
+                status = atoi(body);
+            }
+        }
+    }
+    close(sock);
+    return status;
 }
