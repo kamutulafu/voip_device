@@ -574,6 +574,11 @@ static void report_token(const char *server_ip, const char *token, const char *p
 
 void voip_media_on_call_connected(const char *payload)
 {
+    /* Ensure codec is up, PA enabled, and speaker at a safe loud level for the call. */
+    if (audio_init() == ESP_OK) {
+        audio_set_volume(75);
+    }
+
     if (!payload) {
         payload = "";
     }

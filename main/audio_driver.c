@@ -28,10 +28,18 @@ static const char *TAG = "audio_driver";
 #define AUDIO_SAMPLE_RATE       16000
 #define AUDIO_MCLK_MULTIPLE     384
 
+/* Default speaker volume (0-100). 75% balances loudness vs clipping on the PA. */
+#define AUDIO_DEFAULT_VOLUME    75
+
+/* ES8311 DAC volume register (0x32): 0 = mute, 0xFF = max (~0 dB scale). */
+#define ES8311_REG_DAC_VOLUME   0x32
+#define ES8311_REG_DAC_MUTE     0x31
+
 static i2c_master_dev_handle_t s_es8311_i2c_handle = NULL;
 static i2s_chan_handle_t tx_handle = NULL;
 static i2s_chan_handle_t rx_handle = NULL;
 static bool s_audio_initialized = false;
+static uint8_t s_current_volume = AUDIO_DEFAULT_VOLUME;
 
 #pragma pack(push, 1)
 typedef struct {
@@ -124,8 +132,20 @@ static esp_err_t es8311_init_internal(void)
     ret |= es8311_write_reg(0x14, 0x1A); // Enable analog MIC and max PGA gain
     ret |= es8311_write_reg(0x16, 0x03); // Mic gain to +18dB (ES8311_MIC_GAIN_18DB)
 
-    // Volume configuration (60%)
-    ret |= es8311_write_reg(0x32, 0x98);
+    // Unmute DAC and set default speaker volume
+    ret |= es8311_write_reg(ES8311_REG_DAC_MUTE, 0x00);
+    {
+        uint8_t vol = AUDIO_DEFAULT_VOLUME;
+        if (vol > 100) {
+            vol = 100;
+        }
+        /* Same mapping as es8311_voice_volume_set(): 0..100 -> 0x00..0xFF */
+        uint8_t reg32 = (vol == 0) ? 0 : (uint8_t)((vol * 256 / 100) - 1);
+        ret |= es8311_write_reg(ES8311_REG_DAC_VOLUME, reg32);
+        s_current_volume = vol;
+        ESP_LOGI(TAG, "ES8311 DAC volume set to %u%% (reg 0x32=0x%02X)",
+                 (unsigned)vol, reg32);
+    }
 
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "ES8311 register init failed");
@@ -244,7 +264,18 @@ esp_err_t audio_init(void)
     }
 
     s_audio_initialized = true;
-    ESP_LOGI(TAG, "Audio Driver initialized successfully!");
+    /* Re-assert PA + volume after full bring-up (VoIP / TTS paths rely on this). */
+    gpio_set_level(GPIO_OUTPUT_PA, 1);
+    (void)es8311_write_reg(ES8311_REG_DAC_MUTE, 0x00);
+    {
+        uint8_t reg32 = (AUDIO_DEFAULT_VOLUME == 0)
+                            ? 0
+                            : (uint8_t)((AUDIO_DEFAULT_VOLUME * 256 / 100) - 1);
+        (void)es8311_write_reg(ES8311_REG_DAC_VOLUME, reg32);
+        s_current_volume = AUDIO_DEFAULT_VOLUME;
+    }
+    ESP_LOGI(TAG, "Audio Driver initialized successfully (volume=%u%%, PA=on)",
+             (unsigned)s_current_volume);
     return ESP_OK;
 }
 
@@ -737,8 +768,24 @@ esp_err_t audio_set_volume(uint8_t volume)
     if (volume > 100) {
         volume = 100;
     }
-    uint8_t reg_val = volume * 255 / 100;
-    return es8311_write_reg(0x32, reg_val);
+
+    /* Keep PA enabled whenever we raise playback level. */
+    gpio_set_level(GPIO_OUTPUT_PA, 1);
+    /* Clear soft-mute on DAC. */
+    esp_err_t err = es8311_write_reg(ES8311_REG_DAC_MUTE, 0x00);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    /* Official ES8311 mapping used by espressif/es8311 driver. */
+    uint8_t reg_val = (volume == 0) ? 0 : (uint8_t)((volume * 256 / 100) - 1);
+    err = es8311_write_reg(ES8311_REG_DAC_VOLUME, reg_val);
+    if (err == ESP_OK) {
+        s_current_volume = volume;
+        ESP_LOGI(TAG, "Speaker volume -> %u%% (DAC reg 0x32=0x%02X)",
+                 (unsigned)volume, reg_val);
+    }
+    return err;
 }
 
 int cmd_audio_play(int argc, char **argv)

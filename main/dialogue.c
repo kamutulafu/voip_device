@@ -24,6 +24,9 @@ esp_err_t dialogue_speak(const char *text)
 
     ESP_LOGI(TAG, "TTS: %s", text);
 
+    /* Keep speaker at the safe default level for dialogue / call prompts. */
+    (void)audio_set_volume(75);
+
     uint8_t *wav_buf = NULL;
     size_t wav_len = 0;
     esp_err_t err = tts_xfyun_synthesize_to_mem(text, &wav_buf, &wav_len);
