@@ -81,6 +81,13 @@ api_result_t* api_sos_post_device_end_log(const char *device_id, const char *ses
 api_result_t* api_sos_post_device_back_log(const char *device_id, const char *session_id, const char *device_time, const char *service_id, const char *photos);
 api_result_t* api_sos_push_app_msg(const char *device_id, const char *push_token, const char *msg);
 
+// Memory-based uploads (bypassing filesystem)
+api_result_t* api_search_face_mem(const char *device_id, const char *sid, const uint8_t *file_buf, size_t file_buf_len);
+api_result_t* api_post_calls_photo_mem(const char *session_id, const char *device_id, const uint8_t *file_buf, size_t file_buf_len);
+api_result_t* api_post_calls_audio_mem(const char *session_id, const char *device_id, const uint8_t *file_buf, size_t file_buf_len);
+api_result_t* api_get_baby_info_by_face_img_mem(const char *device_id, const char *sid, const uint8_t *file_buf, size_t file_buf_len);
+api_result_t* api_add_friends_mem(const char *device_id, const char *sid, const char *baby_id, const uint8_t *file_buf, size_t file_buf_len, const char *baby_name);
+
 #ifdef __cplusplus
 }
 #endif

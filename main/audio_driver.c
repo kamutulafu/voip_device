@@ -532,6 +532,167 @@ esp_err_t audio_play_from_file(const char *filename)
     return ESP_OK;
 }
 
+esp_err_t audio_record_to_mem(uint8_t **out_buf, size_t *out_len, uint32_t duration_sec)
+{
+    if (out_buf == NULL || out_len == NULL || duration_sec == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (!s_audio_initialized) {
+        esp_err_t err = audio_init();
+        if (err != ESP_OK) {
+            return err;
+        }
+    }
+
+    wav_header_t header;
+    memcpy(header.chunk_id, "RIFF", 4);
+    header.chunk_size = 0; // Update later
+    memcpy(header.format, "WAVE", 4);
+    memcpy(header.subchunk1_id, "fmt ", 4);
+    header.subchunk1_size = 16;
+    header.audio_format = 1; // PCM
+    header.num_channels = 2; // Stereo
+    header.sample_rate = AUDIO_SAMPLE_RATE;
+    header.bits_per_sample = 16;
+    header.byte_rate = AUDIO_SAMPLE_RATE * 2 * 16 / 8;
+    header.block_align = 2 * 16 / 8;
+    memcpy(header.subchunk2_id, "data", 4);
+    header.subchunk2_size = 0; // Update later
+
+    uint32_t data_bytes_to_record = duration_sec * header.byte_rate;
+    uint32_t total_size = sizeof(wav_header_t) + data_bytes_to_record;
+
+    uint8_t *buf = heap_caps_malloc(total_size, MALLOC_CAP_SPIRAM);
+    if (buf == NULL) {
+        buf = malloc(total_size);
+    }
+    if (buf == NULL) {
+        ESP_LOGE(TAG, "Failed to allocate memory for record buffer");
+        return ESP_ERR_NO_MEM;
+    }
+
+    // Write template header to buffer
+    memcpy(buf, &header, sizeof(wav_header_t));
+
+    uint32_t total_recorded_bytes = 0;
+    size_t bytes_read = 0;
+    uint8_t *write_ptr = buf + sizeof(wav_header_t);
+
+    ESP_LOGI(TAG, "Recording started to memory... (%d seconds)", (int)duration_sec);
+
+    while (total_recorded_bytes < data_bytes_to_record) {
+        uint32_t chunk = data_bytes_to_record - total_recorded_bytes;
+        if (chunk > 4096) {
+            chunk = 4096;
+        }
+
+        esp_err_t ret = i2s_channel_read(rx_handle, write_ptr + total_recorded_bytes, chunk, &bytes_read, pdMS_TO_TICKS(1000));
+        if (ret == ESP_OK && bytes_read > 0) {
+            total_recorded_bytes += bytes_read;
+        } else {
+            ESP_LOGW(TAG, "I2S read timeout or error: %s", esp_err_to_name(ret));
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+    }
+
+    // Update WAV header inside buffer with actual sizes
+    wav_header_t *final_hdr = (wav_header_t *)buf;
+    final_hdr->chunk_size = total_recorded_bytes + sizeof(wav_header_t) - 8;
+    final_hdr->subchunk2_size = total_recorded_bytes;
+
+    *out_buf = buf;
+    *out_len = sizeof(wav_header_t) + total_recorded_bytes;
+
+    ESP_LOGI(TAG, "Recording stopped. Recorded %d bytes to memory", (int)total_recorded_bytes);
+    return ESP_OK;
+}
+
+esp_err_t audio_play_from_mem(const uint8_t *buf, size_t len)
+{
+    if (buf == NULL || len < sizeof(wav_header_t)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!s_audio_initialized) {
+        esp_err_t err = audio_init();
+        if (err != ESP_OK) {
+            return err;
+        }
+    }
+
+    wav_header_t header;
+    memcpy(&header, buf, sizeof(wav_header_t));
+
+    // Validate WAV header
+    if (memcmp(header.chunk_id, "RIFF", 4) != 0 || memcmp(header.format, "WAVE", 4) != 0) {
+        ESP_LOGE(TAG, "Invalid WAV memory format");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    ESP_LOGI(TAG, "Playing WAV from memory: sample_rate=%d, channels=%d, bits=%d",
+             (int)header.sample_rate, (int)header.num_channels, (int)header.bits_per_sample);
+
+    const uint8_t *data_ptr = buf + sizeof(wav_header_t);
+    uint32_t data_len = len - sizeof(wav_header_t);
+    if (data_len > header.subchunk2_size) {
+        data_len = header.subchunk2_size;
+    }
+
+    // Allocate play buffers
+    const uint32_t write_chunk_size = 2048;
+    uint8_t *play_buf = NULL;
+    uint8_t *mono_to_stereo_buf = NULL;
+
+    if (header.num_channels == 1) {
+        mono_to_stereo_buf = malloc(write_chunk_size * 2);
+        if (mono_to_stereo_buf == NULL) {
+            ESP_LOGE(TAG, "Failed to allocate mono-to-stereo buffer");
+            return ESP_ERR_NO_MEM;
+        }
+    }
+
+    size_t offset = 0;
+    size_t bytes_written = 0;
+    ESP_LOGI(TAG, "Playback from memory started...");
+
+    while (offset < data_len) {
+        uint32_t chunk = data_len - offset;
+        if (chunk > write_chunk_size) {
+            chunk = write_chunk_size;
+        }
+
+        uint32_t bytes_to_write = chunk;
+        if (header.num_channels == 1) {
+            // Convert mono to stereo (16-bit)
+            int16_t *mono_samples = (int16_t *)(data_ptr + offset);
+            int16_t *stereo_samples = (int16_t *)mono_to_stereo_buf;
+            uint32_t num_samples = chunk / 2;
+            for (uint32_t i = 0; i < num_samples; i++) {
+                stereo_samples[2 * i] = mono_samples[i];
+                stereo_samples[2 * i + 1] = mono_samples[i];
+            }
+            bytes_to_write = chunk * 2;
+            play_buf = mono_to_stereo_buf;
+        } else {
+            play_buf = (uint8_t *)(data_ptr + offset);
+        }
+
+        esp_err_t ret = i2s_channel_write(tx_handle, play_buf, bytes_to_write, &bytes_written, pdMS_TO_TICKS(1000));
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "I2S write failed: %s", esp_err_to_name(ret));
+            break;
+        }
+        offset += chunk;
+    }
+
+    if (mono_to_stereo_buf) {
+        free(mono_to_stereo_buf);
+    }
+
+    ESP_LOGI(TAG, "Playback from memory finished.");
+    return ESP_OK;
+}
+
 int cmd_audio_record(int argc, char **argv)
 {
     if (argc < 2) {

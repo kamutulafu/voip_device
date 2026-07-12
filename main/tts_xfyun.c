@@ -68,6 +68,12 @@ typedef struct {
 
     /* Output WAV file and the number of audio bytes written so far */
     FILE *fp;
+    
+    /* Memory buffer for output WAV file */
+    uint8_t *mem_buf;
+    size_t mem_len;
+    size_t mem_cap;
+    
     size_t audio_bytes;
 } tts_ctx_t;
 
@@ -204,12 +210,37 @@ static void parse_result_json(tts_ctx_t *ctx, const char *json, size_t len)
                 if (mbedtls_base64_decode(pcm, pcm_cap, &pcm_len,
                                           (const unsigned char *)audio->valuestring,
                                           b64_len) == 0 && pcm_len > 0) {
-                    if (fwrite(pcm, 1, pcm_len, ctx->fp) == pcm_len) {
-                        ctx->audio_bytes += pcm_len;
-                    } else {
-                        ctx->error = true;
-                        snprintf(ctx->err_msg, sizeof(ctx->err_msg),
-                                 "Failed to write audio to file (disk full?)");
+                    if (ctx->fp) {
+                        if (fwrite(pcm, 1, pcm_len, ctx->fp) == pcm_len) {
+                            ctx->audio_bytes += pcm_len;
+                        } else {
+                            ctx->error = true;
+                            snprintf(ctx->err_msg, sizeof(ctx->err_msg),
+                                     "Failed to write audio to file (disk full?)");
+                        }
+                    } else if (ctx->mem_buf) {
+                        if (sizeof(wav_header_t) + ctx->audio_bytes + pcm_len > ctx->mem_cap) {
+                            size_t new_cap = ctx->mem_cap == 0 ? 64 * 1024 : ctx->mem_cap * 2;
+                            while (sizeof(wav_header_t) + ctx->audio_bytes + pcm_len > new_cap) {
+                                new_cap *= 2;
+                            }
+                            uint8_t *tmp = heap_caps_realloc(ctx->mem_buf, new_cap, MALLOC_CAP_SPIRAM);
+                            if (!tmp) {
+                                tmp = realloc(ctx->mem_buf, new_cap);
+                            }
+                            if (tmp) {
+                                ctx->mem_buf = tmp;
+                                ctx->mem_cap = new_cap;
+                            } else {
+                                ctx->error = true;
+                                snprintf(ctx->err_msg, sizeof(ctx->err_msg), "Out of memory");
+                            }
+                        }
+                        
+                        if (!ctx->error) {
+                            memcpy(ctx->mem_buf + sizeof(wav_header_t) + ctx->audio_bytes, pcm, pcm_len);
+                            ctx->audio_bytes += pcm_len;
+                        }
                     }
                 } else {
                     ESP_LOGW(TAG, "Failed to base64-decode audio chunk");
@@ -487,6 +518,132 @@ cleanup:
     if (err == ESP_OK) {
         ESP_LOGI(TAG, "Synthesized %u bytes of audio to %s",
                  (unsigned)ctx.audio_bytes, filename);
+    }
+    return err;
+}
+
+esp_err_t tts_xfyun_synthesize_to_mem(const char *text, uint8_t **out_buf, size_t *out_len)
+{
+    if (!text || text[0] == '\0' || !out_buf || !out_len) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *out_buf = NULL;
+    *out_len = 0;
+
+    esp_err_t err = ensure_time_synced();
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    char *url = build_auth_url();
+    if (!url) {
+        ESP_LOGE(TAG, "Failed to build auth URL");
+        return ESP_FAIL;
+    }
+    ESP_LOGI(TAG, "Connecting to TTS service...");
+
+    tts_ctx_t ctx = {0};
+    ctx.connected = xSemaphoreCreateBinary();
+    ctx.done = xSemaphoreCreateBinary();
+    ctx.mem_cap = 64 * 1024;
+    ctx.mem_buf = heap_caps_malloc(ctx.mem_cap, MALLOC_CAP_SPIRAM);
+    if (!ctx.mem_buf) {
+        ctx.mem_buf = malloc(ctx.mem_cap);
+    }
+    if (!ctx.mem_buf || !ctx.connected || !ctx.done) {
+        err = ESP_ERR_NO_MEM;
+        goto cleanup;
+    }
+
+    esp_websocket_client_config_t cfg = {
+        .uri = url,
+        .buffer_size = 8192,
+        .task_stack = 8192,
+        .network_timeout_ms = 10000,
+        .reconnect_timeout_ms = 10000,
+        .disable_auto_reconnect = true,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+    };
+
+    esp_websocket_client_handle_t client = esp_websocket_client_init(&cfg);
+    if (!client) {
+        err = ESP_FAIL;
+        goto cleanup;
+    }
+    esp_websocket_register_events(client, WEBSOCKET_EVENT_ANY, ws_event_handler, &ctx);
+
+    err = esp_websocket_client_start(client);
+    if (err != ESP_OK) {
+        goto cleanup_client;
+    }
+
+    if (xSemaphoreTake(ctx.connected, pdMS_TO_TICKS(10000)) != pdTRUE) {
+        ESP_LOGE(TAG, "Timed out waiting for connection");
+        err = ESP_ERR_TIMEOUT;
+        goto cleanup_client;
+    }
+
+    err = send_tts_request(client, text);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to send TTS request");
+        goto cleanup_client;
+    }
+
+    /* Wait for all audio frames (status=2) */
+    if (xSemaphoreTake(ctx.done, pdMS_TO_TICKS(TTS_RESULT_TIMEOUT_MS)) != pdTRUE) {
+        ESP_LOGW(TAG, "Timed out waiting for synthesis result");
+        err = ESP_ERR_TIMEOUT;
+    } else if (ctx.error) {
+        ESP_LOGE(TAG, "%s", ctx.err_msg);
+        err = ESP_FAIL;
+    } else if (ctx.audio_bytes == 0) {
+        ESP_LOGE(TAG, "No audio received from TTS service");
+        err = ESP_FAIL;
+    } else {
+        err = ESP_OK;
+    }
+
+cleanup_client:
+    esp_websocket_client_stop(client);
+    esp_websocket_client_destroy(client);
+cleanup:
+    if (err == ESP_OK && ctx.mem_buf) {
+        // Write the standard 44-byte mono/16 kHz/16-bit WAV header to the start of buffer.
+        wav_header_t header;
+        memcpy(header.chunk_id, "RIFF", 4);
+        header.chunk_size = (uint32_t)ctx.audio_bytes + sizeof(wav_header_t) - 8;
+        memcpy(header.format, "WAVE", 4);
+        memcpy(header.subchunk1_id, "fmt ", 4);
+        header.subchunk1_size = 16;
+        header.audio_format = 1; // PCM
+        header.num_channels = 1; // Mono
+        header.sample_rate = TTS_SAMPLE_RATE;
+        header.bits_per_sample = 16;
+        header.byte_rate = TTS_SAMPLE_RATE * 1 * 16 / 8;
+        header.block_align = 1 * 16 / 8;
+        memcpy(header.subchunk2_id, "data", 4);
+        header.subchunk2_size = (uint32_t)ctx.audio_bytes;
+        
+        memcpy(ctx.mem_buf, &header, sizeof(wav_header_t));
+        *out_buf = ctx.mem_buf;
+        *out_len = sizeof(wav_header_t) + ctx.audio_bytes;
+    } else {
+        if (ctx.mem_buf) {
+            free(ctx.mem_buf);
+        }
+    }
+
+    free(ctx.acc);
+    if (ctx.connected) {
+        vSemaphoreDelete(ctx.connected);
+    }
+    if (ctx.done) {
+        vSemaphoreDelete(ctx.done);
+    }
+    free(url);
+
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "Synthesized %u bytes of audio to memory", (unsigned)ctx.audio_bytes);
     }
     return err;
 }

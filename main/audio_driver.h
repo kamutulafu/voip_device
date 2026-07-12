@@ -32,6 +32,27 @@ esp_err_t audio_record_to_file(const char *filename, uint32_t duration_sec);
 esp_err_t audio_play_from_file(const char *filename);
 
 /**
+ * @brief Record audio from microphone directly to a memory buffer as a WAV file.
+ *
+ * The buffer is allocated on the PSRAM heap and must be freed by the caller.
+ *
+ * @param out_buf       [out] Pointer that receives the allocated buffer
+ * @param out_len       [out] Pointer that receives the total size of the WAV data
+ * @param duration_sec  Duration of the recording in seconds
+ * @return ESP_OK on success
+ */
+esp_err_t audio_record_to_mem(uint8_t **out_buf, size_t *out_len, uint32_t duration_sec);
+
+/**
+ * @brief Play a WAV format audio buffer directly from memory.
+ *
+ * @param buf Pointer to the WAV format buffer
+ * @param len Total length of the buffer
+ * @return ESP_OK on success
+ */
+esp_err_t audio_play_from_mem(const uint8_t *buf, size_t len);
+
+/**
  * @brief Set the speaker playback volume
  * @param volume Volume level (0 to 100 percent)
  * @return ESP_OK on success

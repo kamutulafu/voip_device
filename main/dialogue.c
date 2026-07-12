@@ -24,16 +24,19 @@ esp_err_t dialogue_speak(const char *text)
 
     ESP_LOGI(TAG, "TTS: %s", text);
 
-    esp_err_t err = tts_xfyun_synthesize_to_file(text, TTS_PLAY_PATH);
+    uint8_t *wav_buf = NULL;
+    size_t wav_len = 0;
+    esp_err_t err = tts_xfyun_synthesize_to_mem(text, &wav_buf, &wav_len);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "TTS synthesis failed: %s", esp_err_to_name(err));
         return err;
     }
 
-    err = audio_play_from_file(TTS_PLAY_PATH);
+    err = audio_play_from_mem(wav_buf, wav_len);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "TTS playback failed: %s", esp_err_to_name(err));
     }
+    free(wav_buf);
     return err;
 }
 

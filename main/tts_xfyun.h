@@ -20,6 +20,18 @@ extern "C" {
 esp_err_t tts_xfyun_synthesize_to_file(const char *text, const char *filename);
 
 /**
+ * @brief Synthesize UTF-8 text to speech directly to a memory buffer (WAV format).
+ *
+ * The buffer is allocated on the PSRAM heap and must be freed by the caller.
+ *
+ * @param text     UTF-8 text to synthesize
+ * @param out_buf  [out] Pointer that receives the allocated WAV format buffer
+ * @param out_len  [out] Pointer that receives the total size of the WAV data
+ * @return ESP_OK on success
+ */
+esp_err_t tts_xfyun_synthesize_to_mem(const char *text, uint8_t **out_buf, size_t *out_len);
+
+/**
  * @brief Console command: synthesize text to speech and play it on the speaker.
  *
  * Usage: tts_test <text...>

@@ -54,7 +54,7 @@ static esp_err_t http_event_handler(esp_http_client_event_t *evt) {
     return ESP_OK;
 }
 
-static api_result_t* api_execute(
+static api_result_t* api_execute_internal(
     esp_http_client_method_t method,
     const char *path,
     const char *query_string,
@@ -64,6 +64,8 @@ static api_result_t* api_execute(
     const char *json_body,
     const char *raw_body,
     const char *file_path,
+    const uint8_t *file_buf,
+    size_t file_buf_len,
     cJSON *multipart_fields
 ) {
     char url[512];
@@ -92,7 +94,7 @@ static api_result_t* api_execute(
     if (header_aqm) esp_http_client_set_header(client, "aqm-authorization", header_aqm);
 
     const char *boundary = "----WebKitFormBoundary7MA4YWxkTrZu0gW";
-    if (file_path) {
+    if (file_path || (file_buf && file_buf_len > 0)) {
         char content_type[128];
         snprintf(content_type, sizeof(content_type), "multipart/form-data; boundary=%s", boundary);
         esp_http_client_set_header(client, "Content-Type", content_type);
@@ -110,19 +112,25 @@ static api_result_t* api_execute(
         return NULL;
     }
 
-    if (file_path) {
-        struct stat st;
-        if (stat(file_path, &st) != 0) {
-            ESP_LOGE(TAG, "File not found: %s", file_path);
-            esp_http_client_cleanup(client);
-            free(res);
-            return NULL;
-        }
-        if (st.st_size == 0) {
-            ESP_LOGE(TAG, "File is empty: %s", file_path);
-            esp_http_client_cleanup(client);
-            free(res);
-            return NULL;
+    if (file_path || (file_buf && file_buf_len > 0)) {
+        int file_data_len = 0;
+        if (file_path) {
+            struct stat st;
+            if (stat(file_path, &st) != 0) {
+                ESP_LOGE(TAG, "File not found: %s", file_path);
+                esp_http_client_cleanup(client);
+                free(res);
+                return NULL;
+            }
+            if (st.st_size == 0) {
+                ESP_LOGE(TAG, "File is empty: %s", file_path);
+                esp_http_client_cleanup(client);
+                free(res);
+                return NULL;
+            }
+            file_data_len = st.st_size;
+        } else {
+            file_data_len = file_buf_len;
         }
         
         int total_len = 0;
@@ -143,7 +151,7 @@ static api_result_t* api_execute(
             "--%s\r\nContent-Disposition: form-data; name=\"file\"; filename=\"%s\"\r\nContent-Type: application/octet-stream\r\n\r\n", 
             boundary, "upload.dat");
             
-        total_len += st.st_size;
+        total_len += file_data_len;
         total_len += snprintf(len_chunk, sizeof(len_chunk), "\r\n--%s--\r\n", boundary);
 
         esp_err_t err = esp_http_client_open(client, total_len);
@@ -167,14 +175,18 @@ static api_result_t* api_execute(
                 boundary, "upload.dat");
             esp_http_client_write(client, chunk, len);
             
-            FILE *f = fopen(file_path, "rb");
-            if (f) {
-                char fbuf[1024];
-                size_t r;
-                while ((r = fread(fbuf, 1, sizeof(fbuf), f)) > 0) {
-                    esp_http_client_write(client, fbuf, r);
+            if (file_path) {
+                FILE *f = fopen(file_path, "rb");
+                if (f) {
+                    char fbuf[1024];
+                    size_t r;
+                    while ((r = fread(fbuf, 1, sizeof(fbuf), f)) > 0) {
+                        esp_http_client_write(client, fbuf, r);
+                    }
+                    fclose(f);
                 }
-                fclose(f);
+            } else if (file_buf && file_buf_len > 0) {
+                esp_http_client_write(client, (const char *)file_buf, file_buf_len);
             }
             
             len = snprintf(chunk, sizeof(chunk), "\r\n--%s--\r\n", boundary);
@@ -182,9 +194,6 @@ static api_result_t* api_execute(
             esp_http_client_fetch_headers(client);
         }
         
-        // Reset the buffer because esp_http_client_fetch_headers() might have 
-        // already triggered HTTP_EVENT_ON_DATA for the first packet.
-        // We will read the entire body cleanly via esp_http_client_read.
         resp.len = 0;
         if (resp.buf) resp.buf[0] = '\0';
         
@@ -219,17 +228,27 @@ static api_result_t* api_execute(
             cJSON *data_obj = cJSON_GetObjectItemCaseSensitive(res->root, "data");
             
             if (cJSON_IsString(code_obj)) res->code = code_obj->valuestring;
-            else if (cJSON_IsNumber(code_obj)) {
-                // If it's a number, convert it to string. We'll use a static buffer inside cJSON parsing tree memory or just leak a small str?
-                // Actually since code is const char*, we shouldn't modify raw_body. 
-                // We'll just leave it. If they need number, they can parse it.
-            }
             if (cJSON_IsString(msg_obj)) res->msg = msg_obj->valuestring;
             res->data = data_obj;
         }
     }
     
     return res;
+}
+
+static api_result_t* api_execute(
+    esp_http_client_method_t method,
+    const char *path,
+    const char *query_string,
+    const char *header_deviceid,
+    const char *header_sid,
+    const char *header_aqm,
+    const char *json_body,
+    const char *raw_body,
+    const char *file_path,
+    cJSON *multipart_fields
+) {
+    return api_execute_internal(method, path, query_string, header_deviceid, header_sid, header_aqm, json_body, raw_body, file_path, NULL, 0, multipart_fields);
 }
 
 // ---- Implementations ----
@@ -460,5 +479,35 @@ api_result_t* api_sos_push_app_msg(const char *device_id, const char *push_token
     api_result_t *res = api_execute(HTTP_METHOD_POST, "/wechat-service/api/device/sos/pushAppMsg", NULL, device_id, NULL, NULL, json_body, NULL, NULL, NULL);
     cJSON_Delete(req);
     free(json_body);
+    return res;
+}
+
+api_result_t* api_search_face_mem(const char *device_id, const char *sid, const uint8_t *file_buf, size_t file_buf_len) {
+    return api_execute_internal(HTTP_METHOD_POST, "/wechat-service/api/device/searchFace2", NULL, device_id, sid, NULL, NULL, NULL, NULL, file_buf, file_buf_len, NULL);
+}
+
+api_result_t* api_post_calls_photo_mem(const char *session_id, const char *device_id, const uint8_t *file_buf, size_t file_buf_len) {
+    char query[256] = {0};
+    snprintf(query, sizeof(query), "sessionId=%s&deviceId=%s", session_id?session_id:"", device_id?device_id:"");
+    return api_execute_internal(HTTP_METHOD_POST, "/wechat-service/api/device/postCallsPhoto", query, NULL, NULL, NULL, NULL, NULL, NULL, file_buf, file_buf_len, NULL);
+}
+
+api_result_t* api_post_calls_audio_mem(const char *session_id, const char *device_id, const uint8_t *file_buf, size_t file_buf_len) {
+    char query[256] = {0};
+    snprintf(query, sizeof(query), "sessionId=%s&deviceId=%s", session_id?session_id:"", device_id?device_id:"");
+    return api_execute_internal(HTTP_METHOD_POST, "/wechat-service/api/device/postCallsAudio", query, NULL, NULL, NULL, NULL, NULL, NULL, file_buf, file_buf_len, NULL);
+}
+
+api_result_t* api_get_baby_info_by_face_img_mem(const char *device_id, const char *sid, const uint8_t *file_buf, size_t file_buf_len) {
+    return api_execute_internal(HTTP_METHOD_POST, "/wechat-service/api/device/getBabyInfoByFaceImg", NULL, device_id, sid, NULL, NULL, NULL, NULL, file_buf, file_buf_len, NULL);
+}
+
+api_result_t* api_add_friends_mem(const char *device_id, const char *sid, const char *baby_id, const uint8_t *file_buf, size_t file_buf_len, const char *baby_name) {
+    cJSON *fields = cJSON_CreateObject();
+    if(baby_id) cJSON_AddStringToObject(fields, "babyId", baby_id);
+    if(baby_name) cJSON_AddStringToObject(fields, "babyName", baby_name);
+    
+    api_result_t *res = api_execute_internal(HTTP_METHOD_POST, "/wechat-service/api/device/addFriends", NULL, device_id, sid, NULL, NULL, NULL, NULL, file_buf, file_buf_len, fields);
+    cJSON_Delete(fields);
     return res;
 }

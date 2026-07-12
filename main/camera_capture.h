@@ -23,6 +23,16 @@ void camera_capture_save_frame(const uint8_t *buf, size_t len);
  */
 esp_err_t camera_capture_photo(const char *filepath);
 
+/**
+ * @brief Capture a single photo from the camera directly to a memory buffer.
+ *
+ * @param buf Output memory buffer (should be pre-allocated, e.g. 128KB in PSRAM)
+ * @param max_len Size of @p buf
+ * @param out_len Pointer to write the actual captured JPEG size to
+ * @return ESP_OK on success
+ */
+esp_err_t camera_capture_photo_mem(uint8_t *buf, size_t max_len, size_t *out_len);
+
 int cmd_camera_capture(int argc, char **argv);
 
 #endif // CAMERA_CAPTURE_H

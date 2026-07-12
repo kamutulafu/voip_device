@@ -37,6 +37,7 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_heap_caps.h"
 #include "cJSON.h"
 
 static const char *TAG = "voice_flow";
@@ -91,15 +92,6 @@ static session_t s_sess;
 static volatile bool s_session_active = false;
 
 /* ---- small helpers ----------------------------------------------------- */
-
-static bool check_file_valid(const char *path)
-{
-    struct stat st;
-    if (stat(path, &st) != 0) {
-        return false;
-    }
-    return st.st_size > 0;
-}
 
 static void now_str(char *out, size_t sz)
 {
@@ -406,8 +398,10 @@ static void record_upload_save(session_t *s, const char *receiver_id,
     dialogue_speak("好嘞！请说出您的留言，说完说over");
 
     const uint32_t rec_sec = 8;
-    if (audio_record_to_file(REPLY_WAV_PATH, rec_sec) != ESP_OK) {
-        ESP_LOGE(TAG, "recording leave msg failed");
+    uint8_t *audio_buf = NULL;
+    size_t audio_len = 0;
+    if (audio_record_to_mem(&audio_buf, &audio_len, rec_sec) != ESP_OK || audio_len == 0) {
+        ESP_LOGE(TAG, "recording leave msg to memory failed");
         dialogue_speak("录音好像出问题了呢");
         return;
     }
@@ -415,30 +409,31 @@ static void record_upload_save(session_t *s, const char *receiver_id,
     /* Best-effort scene photo. */
     char img_url[256] = "";
     char snd_url[256] = "";
-    camera_capture_photo(FACE_IMG_PATH);
 
-    if (check_file_valid(FACE_IMG_PATH)) {
-        api_result_t *pr = api_post_calls_photo(s->session_id, DEVICE_ID, FACE_IMG_PATH);
+    size_t photo_len = 0;
+    uint8_t *photo_buf = heap_caps_malloc(128 * 1024, MALLOC_CAP_SPIRAM);
+    if (!photo_buf) {
+        photo_buf = malloc(128 * 1024);
+    }
+    if (photo_buf) {
+        camera_capture_photo_mem(photo_buf, 128 * 1024, &photo_len);
+    }
+
+    if (photo_buf && photo_len > 0) {
+        api_result_t *pr = api_post_calls_photo_mem(s->session_id, DEVICE_ID, photo_buf, photo_len);
         extract_url(pr, img_url, sizeof(img_url));
         if (pr) api_result_free(pr);
     } else {
         ESP_LOGW(TAG, "Skipping photo upload because captured photo is empty/invalid");
     }
-
-    if (check_file_valid(REPLY_WAV_PATH)) {
-        api_result_t *ar = api_post_calls_audio(s->session_id, DEVICE_ID, REPLY_WAV_PATH);
-        extract_url(ar, snd_url, sizeof(snd_url));
-        if (ar) api_result_free(ar);
-    } else {
-        ESP_LOGE(TAG, "Recording file is empty/invalid; cannot upload audio");
-        dialogue_speak("录音保存失败，请检查空间");
-        unlink(FACE_IMG_PATH);
-        unlink(REPLY_WAV_PATH);
-        return;
+    if (photo_buf) {
+        free(photo_buf);
     }
 
-    unlink(FACE_IMG_PATH);
-    unlink(REPLY_WAV_PATH);
+    api_result_t *ar = api_post_calls_audio_mem(s->session_id, DEVICE_ID, audio_buf, audio_len);
+    extract_url(ar, snd_url, sizeof(snd_url));
+    if (ar) api_result_free(ar);
+    free(audio_buf);
 
     cJSON *o = cJSON_CreateObject();
     cJSON_AddStringToObject(o, "sessionId", s->session_id);
@@ -588,19 +583,30 @@ static void handle_add_friend(session_t *s)
     const int64_t hard_us = 15 * 1000000LL;  /* 15s hard timeout  */
     bool soft_done = false;
 
+    uint8_t *photo_buf = heap_caps_malloc(128 * 1024, MALLOC_CAP_SPIRAM);
+    if (!photo_buf) {
+        photo_buf = malloc(128 * 1024);
+    }
+    if (!photo_buf) {
+        ESP_LOGE(TAG, "failed to allocate photo memory buffer");
+        dialogue_speak("内存分配失败，请稍后再试");
+        return;
+    }
+
     while ((esp_timer_get_time() - start) < hard_us) {
         if (!soft_done && (esp_timer_get_time() - start) >= soft_us) {
             dialogue_speak("你的小伙伴是不是害羞了呢？如果要加好友，请让Ta站到机器前哦！");
             soft_done = true;
         }
 
-        camera_capture_photo(FACE_IMG_PATH);
-        if (!check_file_valid(FACE_IMG_PATH)) {
+        size_t photo_len = 0;
+        camera_capture_photo_mem(photo_buf, 128 * 1024, &photo_len);
+        if (photo_len == 0) {
             ESP_LOGW(TAG, "Captured photo is empty/invalid, retrying...");
             vTaskDelay(pdMS_TO_TICKS(2000));
             continue;
         }
-        api_result_t *res = api_get_baby_info_by_face_img(DEVICE_ID, s->session_id, FACE_IMG_PATH);
+        api_result_t *res = api_get_baby_info_by_face_img_mem(DEVICE_ID, s->session_id, photo_buf, photo_len);
         bool recognized = false;
         char friend_baby_id[40] = "";
         char friend_name[40] = "";
@@ -622,19 +628,19 @@ static void handle_add_friend(session_t *s)
         }
 
         if (res) api_result_free(res);
-        unlink(FACE_IMG_PATH);
 
         if (recognized) {
             if (is_existing_friend(s, friend_baby_id)) {
                 dialogue_speak("嘿嘿，经我再三查证，你们早已经是好朋友啦！");
             } else {
                 /* registered user -> add as friend */
-                api_result_t *ar = api_add_friends(DEVICE_ID, s->session_id,
-                                                    friend_baby_id, NULL, friend_name);
+                api_result_t *ar = api_add_friends_mem(DEVICE_ID, s->session_id,
+                                                    friend_baby_id, NULL, 0, friend_name);
                 if (ar) api_result_free(ar);
                 dialogue_speak_fmt("哇%s您好，现在你们已经正式成为好朋友啦",
                                    friend_name[0] ? friend_name : "小朋友");
             }
+            free(photo_buf);
             return;
         }
 
@@ -646,6 +652,7 @@ static void handle_add_friend(session_t *s)
         vTaskDelay(pdMS_TO_TICKS(2000));
     }
 
+    free(photo_buf);
     dialogue_speak("等太久了呢，我们下次再试吧");
 }
 
@@ -811,19 +818,33 @@ static void voice_task(void *arg)
         cmd_uvc_init(0, NULL);
     }
 
-    esp_err_t cap = camera_capture_photo(FACE_IMG_PATH);
-    if (cap != ESP_OK || !check_file_valid(FACE_IMG_PATH)) {
+    size_t photo_len = 0;
+    uint8_t *photo_buf = heap_caps_malloc(128 * 1024, MALLOC_CAP_SPIRAM);
+    if (!photo_buf) {
+        photo_buf = malloc(128 * 1024);
+    }
+    if (!photo_buf) {
+        ESP_LOGE(TAG, "failed to allocate photo memory buffer");
+        dialogue_speak("内存分配失败，请稍后再试");
+        s_session_active = false;
+        vTaskDelete(NULL);
+        return;
+    }
+
+    esp_err_t cap = camera_capture_photo_mem(photo_buf, 128 * 1024, &photo_len);
+    if (cap != ESP_OK || photo_len == 0) {
         ESP_LOGE(TAG, "photo capture failed or file empty; aborting session");
+        free(photo_buf);
         dialogue_speak("摄像头好像出问题了呢，请稍后再试");
         s_session_active = false;
         vTaskDelete(NULL);
         return;
     }
 
-    api_result_t *res = api_search_face(DEVICE_ID, "", FACE_IMG_PATH);
+    api_result_t *res = api_search_face_mem(DEVICE_ID, "", photo_buf, photo_len);
     bool ok = handle_face_result(res, s);
     if (res) api_result_free(res);
-    unlink(FACE_IMG_PATH);
+    free(photo_buf);
 
     /* Start heartbeat now that we (may) have a session. */
     if (s->session_id[0] && s_keep_timer) {
