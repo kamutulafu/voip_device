@@ -14,6 +14,7 @@
 #include "esp_event.h"
 #include "esp_netif.h"
 #include "api_test.h"
+#include "voice_flow.h"
 
 int cmd_zmodem_send(int argc, char **argv);
 int cmd_zmodem_recv(int argc, char **argv);
@@ -168,6 +169,10 @@ void app_main(void)
 
     // Register API test command
     register_api_test_cmd();
+
+    // Initialize the voice interaction subsystem and register its wake command
+    ESP_ERROR_CHECK(voice_flow_init());
+    register_voice_wake_cmd();
 
     // Trigger auto-connection to saved WiFi in background
     wifi_manager_start_autoconnect();

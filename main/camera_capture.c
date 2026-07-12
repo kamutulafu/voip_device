@@ -44,6 +44,62 @@ void camera_capture_save_frame(const uint8_t *buf, size_t len)
     s_capture_requested = false;
 }
 
+esp_err_t camera_capture_photo(const char *filepath)
+{
+    if (!uvc_is_initialized()) {
+        ESP_LOGE(TAG, "Camera UVC is not initialized. Run uvc_init first.");
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (!filepath || filepath[0] == '\0') {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (uvc_is_streaming()) {
+        // Capture from live stream
+        camera_capture_set_request(filepath);
+
+        // Wait for capture to complete (max 2 seconds)
+        int timeout = 20;
+        while (camera_capture_is_requested() && timeout > 0) {
+            vTaskDelay(pdMS_TO_TICKS(100));
+            timeout--;
+        }
+        if (camera_capture_is_requested()) {
+            // Force clear request
+            camera_capture_save_frame(NULL, 0);
+            ESP_LOGE(TAG, "Timeout waiting for live frame capture");
+            return ESP_ERR_TIMEOUT;
+        }
+    } else {
+        // Temporarily start streaming to capture
+        esp_err_t err = uvc_start_stream();
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Error starting camera stream: %s", esp_err_to_name(err));
+            return err;
+        }
+
+        // Skip 4 frames, capture on 5th
+        for (int i = 0; i < 4; i++) {
+            void *fb = uvc_get_stream_fb();
+            if (fb) {
+                uvc_return_stream_fb(fb);
+            }
+            vTaskDelay(pdMS_TO_TICKS(50));
+        }
+
+        camera_capture_set_request(filepath);
+
+        void *fb = uvc_get_stream_fb();
+        if (fb) {
+            uvc_return_stream_fb(fb);
+        }
+
+        uvc_stop_stream();
+    }
+
+    return ESP_OK;
+}
+
 int cmd_camera_capture(int argc, char **argv)
 {
     if (!uvc_is_initialized()) {
@@ -61,50 +117,13 @@ int cmd_camera_capture(int argc, char **argv)
     }
 
     printf("Capturing photo to %s...\n", filepath);
-    
-    if (uvc_is_streaming()) {
-        // Capture from live stream
-        camera_capture_set_request(filepath);
-        
-        // Wait for capture to complete (max 2 seconds)
-        int timeout = 20;
-        while (camera_capture_is_requested() && timeout > 0) {
-            vTaskDelay(pdMS_TO_TICKS(100));
-            timeout--;
-        }
-        if (camera_capture_is_requested()) {
-            // Force clear request
-            camera_capture_save_frame(NULL, 0);
-            printf("Error: Timeout waiting for live frame capture.\n");
-            return 1;
-        }
-    } else {
-        // Temporarily start streaming to capture
-        esp_err_t err = uvc_start_stream();
-        if (err != ESP_OK) {
-            printf("Error starting camera stream: %s\n", esp_err_to_name(err));
-            return 1;
-        }
-        
-        // Skip 4 frames, capture on 5th
-        for (int i = 0; i < 4; i++) {
-            void *fb = uvc_get_stream_fb();
-            if (fb) {
-                uvc_return_stream_fb(fb);
-            }
-            vTaskDelay(pdMS_TO_TICKS(50));
-        }
-        
-        camera_capture_set_request(filepath);
-        
-        void *fb = uvc_get_stream_fb();
-        if (fb) {
-            uvc_return_stream_fb(fb);
-        }
-        
-        uvc_stop_stream();
+
+    esp_err_t err = camera_capture_photo(filepath);
+    if (err != ESP_OK) {
+        printf("Error: capture failed (%s)\n", esp_err_to_name(err));
+        return 1;
     }
-    
+
     printf("Photo captured successfully!\n");
     return 0;
 }
