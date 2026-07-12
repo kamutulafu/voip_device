@@ -30,6 +30,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
+#include <sys/stat.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -89,6 +91,15 @@ static session_t s_sess;
 static volatile bool s_session_active = false;
 
 /* ---- small helpers ----------------------------------------------------- */
+
+static bool check_file_valid(const char *path)
+{
+    struct stat st;
+    if (stat(path, &st) != 0) {
+        return false;
+    }
+    return st.st_size > 0;
+}
 
 static void now_str(char *out, size_t sz)
 {
@@ -406,13 +417,28 @@ static void record_upload_save(session_t *s, const char *receiver_id,
     char snd_url[256] = "";
     camera_capture_photo(FACE_IMG_PATH);
 
-    api_result_t *pr = api_post_calls_photo(s->session_id, DEVICE_ID, FACE_IMG_PATH);
-    extract_url(pr, img_url, sizeof(img_url));
-    if (pr) api_result_free(pr);
+    if (check_file_valid(FACE_IMG_PATH)) {
+        api_result_t *pr = api_post_calls_photo(s->session_id, DEVICE_ID, FACE_IMG_PATH);
+        extract_url(pr, img_url, sizeof(img_url));
+        if (pr) api_result_free(pr);
+    } else {
+        ESP_LOGW(TAG, "Skipping photo upload because captured photo is empty/invalid");
+    }
 
-    api_result_t *ar = api_post_calls_audio(s->session_id, DEVICE_ID, REPLY_WAV_PATH);
-    extract_url(ar, snd_url, sizeof(snd_url));
-    if (ar) api_result_free(ar);
+    if (check_file_valid(REPLY_WAV_PATH)) {
+        api_result_t *ar = api_post_calls_audio(s->session_id, DEVICE_ID, REPLY_WAV_PATH);
+        extract_url(ar, snd_url, sizeof(snd_url));
+        if (ar) api_result_free(ar);
+    } else {
+        ESP_LOGE(TAG, "Recording file is empty/invalid; cannot upload audio");
+        dialogue_speak("录音保存失败，请检查空间");
+        unlink(FACE_IMG_PATH);
+        unlink(REPLY_WAV_PATH);
+        return;
+    }
+
+    unlink(FACE_IMG_PATH);
+    unlink(REPLY_WAV_PATH);
 
     cJSON *o = cJSON_CreateObject();
     cJSON_AddStringToObject(o, "sessionId", s->session_id);
@@ -569,6 +595,11 @@ static void handle_add_friend(session_t *s)
         }
 
         camera_capture_photo(FACE_IMG_PATH);
+        if (!check_file_valid(FACE_IMG_PATH)) {
+            ESP_LOGW(TAG, "Captured photo is empty/invalid, retrying...");
+            vTaskDelay(pdMS_TO_TICKS(2000));
+            continue;
+        }
         api_result_t *res = api_get_baby_info_by_face_img(DEVICE_ID, s->session_id, FACE_IMG_PATH);
         bool recognized = false;
         char friend_baby_id[40] = "";
@@ -591,6 +622,7 @@ static void handle_add_friend(session_t *s)
         }
 
         if (res) api_result_free(res);
+        unlink(FACE_IMG_PATH);
 
         if (recognized) {
             if (is_existing_friend(s, friend_baby_id)) {
@@ -780,8 +812,8 @@ static void voice_task(void *arg)
     }
 
     esp_err_t cap = camera_capture_photo(FACE_IMG_PATH);
-    if (cap != ESP_OK) {
-        ESP_LOGE(TAG, "photo capture failed (%s); aborting session", esp_err_to_name(cap));
+    if (cap != ESP_OK || !check_file_valid(FACE_IMG_PATH)) {
+        ESP_LOGE(TAG, "photo capture failed or file empty; aborting session");
         dialogue_speak("摄像头好像出问题了呢，请稍后再试");
         s_session_active = false;
         vTaskDelete(NULL);
@@ -791,6 +823,7 @@ static void voice_task(void *arg)
     api_result_t *res = api_search_face(DEVICE_ID, "", FACE_IMG_PATH);
     bool ok = handle_face_result(res, s);
     if (res) api_result_free(res);
+    unlink(FACE_IMG_PATH);
 
     /* Start heartbeat now that we (may) have a session. */
     if (s->session_id[0] && s_keep_timer) {
@@ -831,6 +864,11 @@ static void voice_task(void *arg)
 esp_err_t voice_flow_init(void)
 {
     api_service_init(BACKEND_BASE_URL);
+
+    /* Auto-cleanup any leftover large dump files or temporary media to free SPIFFS space */
+    unlink("/spiffs/dump.h264");
+    unlink("/spiffs/face.jpg");
+    unlink("/spiffs/reply.wav");
 
     if (!s_keep_timer) {
         const esp_timer_create_args_t args = {

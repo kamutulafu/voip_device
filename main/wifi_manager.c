@@ -136,6 +136,15 @@ void wifi_manager_start_autoconnect(void)
     xTaskCreate(wifi_autoconnect_task, "wifi_autoconnect", 4096, NULL, 5, NULL);
 }
 
+bool wifi_manager_is_connected(void)
+{
+    if (s_wifi_event_group == NULL) {
+        return false;
+    }
+    EventBits_t bits = xEventGroupGetBits(s_wifi_event_group);
+    return (bits & WIFI_CONNECTED_BIT) != 0;
+}
+
 int cmd_wifi_join(int argc, char **argv)
 {
     if (argc < 3) {

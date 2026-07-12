@@ -14,6 +14,7 @@
 #include "esp_websocket_client.h"
 #include "esp_crt_bundle.h"
 #include "esp_netif_sntp.h"
+#include "wifi_manager.h"
 
 #include "mbedtls/md.h"
 #include "mbedtls/base64.h"
@@ -336,6 +337,11 @@ static esp_err_t ensure_time_synced(void)
     localtime_r(&now, &tm_now);
     if (tm_now.tm_year >= (2024 - 1900)) {
         return ESP_OK; /* already synced */
+    }
+
+    if (!wifi_manager_is_connected()) {
+        ESP_LOGW(TAG, "WiFi not connected, skipping SNTP sync");
+        return ESP_ERR_INVALID_STATE;
     }
 
     ESP_LOGI(TAG, "Synchronizing time via SNTP...");

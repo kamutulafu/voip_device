@@ -118,6 +118,12 @@ static api_result_t* api_execute(
             free(res);
             return NULL;
         }
+        if (st.st_size == 0) {
+            ESP_LOGE(TAG, "File is empty: %s", file_path);
+            esp_http_client_cleanup(client);
+            free(res);
+            return NULL;
+        }
         
         int total_len = 0;
         char len_chunk[512];

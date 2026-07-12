@@ -377,6 +377,7 @@ static void media_push_task(void *pvParameter)
                             m2m_cap_buf.memory = V4L2_MEMORY_MMAP;
 
                             if (ioctl(m2m_fd, VIDIOC_DQBUF, &m2m_cap_buf) == 0) {
+#if 0
                                 static FILE *dump_file = NULL;
                                 static size_t dumped = 0;
                                 static bool file_closed = false;
@@ -401,6 +402,7 @@ static void media_push_task(void *pvParameter)
                                         ESP_LOGI(TAG, "Finished dumping 500KB of H.264 to SPIFFS");
                                     }
                                 }
+#endif
 
                                 int ret = send_media_packet(sock, 1, m2m_cap_buffer,
                                                             m2m_cap_buf.bytesused, use_http);
