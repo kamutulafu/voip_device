@@ -32,6 +32,8 @@ typedef struct {
     const char *code;
     const char *msg;
     cJSON *data;        
+    
+    char *code_alloc;   // Dynamic allocation for string conversion of numeric codes
 } api_result_t;
 
 /**

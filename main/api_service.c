@@ -24,6 +24,7 @@ void api_result_free(api_result_t *res) {
     if (res) {
         if (res->root) cJSON_Delete(res->root);
         if (res->raw_body) free(res->raw_body);
+        if (res->code_alloc) free(res->code_alloc);
         free(res);
     }
 }
@@ -227,7 +228,19 @@ static api_result_t* api_execute_internal(
             cJSON *msg_obj = cJSON_GetObjectItemCaseSensitive(res->root, "msg");
             cJSON *data_obj = cJSON_GetObjectItemCaseSensitive(res->root, "data");
             
-            if (cJSON_IsString(code_obj)) res->code = code_obj->valuestring;
+            if (cJSON_IsString(code_obj)) {
+                res->code = code_obj->valuestring;
+            } else if (cJSON_IsNumber(code_obj)) {
+                res->code_alloc = malloc(32);
+                if (res->code_alloc) {
+                    snprintf(res->code_alloc, 32, "%d", (int)code_obj->valueint);
+                    res->code = res->code_alloc;
+                }
+            }
+            
+            if (!msg_obj) {
+                msg_obj = cJSON_GetObjectItemCaseSensitive(res->root, "message");
+            }
             if (cJSON_IsString(msg_obj)) res->msg = msg_obj->valuestring;
             res->data = data_obj;
         }

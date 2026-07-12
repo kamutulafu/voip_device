@@ -211,8 +211,9 @@ static bool handle_face_result(api_result_t *res, session_t *s)
     if (!res) {
         return false;
     }
-    ESP_LOGI(TAG, "searchFace2 HTTP=%d code=%s msg=%s",
-             res->http_status, res->code ? res->code : "?", res->msg ? res->msg : "?");
+    ESP_LOGI(TAG, "searchFace2 HTTP=%d code=%s msg=%s raw=%s",
+             res->http_status, res->code ? res->code : "?", res->msg ? res->msg : "?",
+             res->raw_body ? res->raw_body : "");
 
     /* code != "0" -> failure (face fuzzy / no user / stranger reg fail). */
     if (!res->code || strcmp(res->code, "0") != 0) {
