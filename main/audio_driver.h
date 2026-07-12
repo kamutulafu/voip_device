@@ -60,6 +60,34 @@ esp_err_t audio_play_from_mem(const uint8_t *buf, size_t len);
 esp_err_t audio_set_volume(uint8_t volume);
 
 /**
+ * @brief Begin streaming PCM playback at an arbitrary sample rate.
+ *
+ * Reconfigures the I2S TX clock to @p sample_rate. Pair with
+ * audio_play_pcm_write() and audio_play_pcm_end(). The clock is restored to the
+ * default (16 kHz) by audio_play_pcm_end() so ASR/TTS keep working.
+ *
+ * @param sample_rate Playback sample rate in Hz (e.g. 44100, 22050, 16000)
+ * @return ESP_OK on success
+ */
+esp_err_t audio_play_pcm_begin(uint32_t sample_rate);
+
+/**
+ * @brief Write 16-bit PCM samples to the speaker (used between begin/end).
+ *
+ * @param pcm         Pointer to int16 samples.
+ * @param num_samples For mono: number of mono samples. For stereo: number of
+ *                    interleaved int16 values (frames * 2).
+ * @param channels    1 = mono (expanded to stereo), 2 = interleaved stereo.
+ * @return ESP_OK on success
+ */
+esp_err_t audio_play_pcm_write(const int16_t *pcm, size_t num_samples, int channels);
+
+/**
+ * @brief End streaming PCM playback and restore the default 16 kHz clock.
+ */
+void audio_play_pcm_end(void);
+
+/**
  * @brief Record audio from the microphone into a 16 kHz / 16-bit mono PCM buffer.
  *
  * The buffer is allocated with malloc (SPIRAM-capable heap) and must be freed

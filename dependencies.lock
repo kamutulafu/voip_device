@@ -1,4 +1,14 @@
 dependencies:
+  esphome/micro-mp3:
+    component_hash: c0c1da0b22a5543c0fe86094a03ed4746ae8ad220a432306d88e5eab1f6f7b63
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=4.4'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 0.2.3
   espressif/cmake_utilities:
     component_hash: 351350613ceafba240b761b4ea991e0f231ac7a9f59a9ee901f751bddc0bb18f
     dependencies:
@@ -253,12 +263,13 @@ dependencies:
       type: idf
     version: 5.5.0
 direct_dependencies:
+- esphome/micro-mp3
 - espressif/es8311
 - espressif/esp_hosted
 - espressif/esp_video
 - espressif/esp_websocket_client
 - espressif/esp_wifi_remote
 - espressif/usb_device_uvc
-manifest_hash: c006216aa31c12a2b8df4d95a3bdc1db758223dce50b633f7db48c5c867e8ea9
+manifest_hash: 36f0541f505f07c23c93107d1a5881637c8a71a3c173d7aeb7c94454e282408a
 target: esp32p4
 version: 2.0.0

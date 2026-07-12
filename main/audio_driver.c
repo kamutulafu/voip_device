@@ -724,6 +724,77 @@ esp_err_t audio_play_from_mem(const uint8_t *buf, size_t len)
     return ESP_OK;
 }
 
+esp_err_t audio_play_pcm_begin(uint32_t sample_rate)
+{
+    if (!s_audio_initialized) {
+        esp_err_t err = audio_init();
+        if (err != ESP_OK) {
+            return err;
+        }
+    }
+    if (sample_rate == 0) {
+        sample_rate = AUDIO_SAMPLE_RATE;
+    }
+
+    i2s_channel_disable(tx_handle);
+    i2s_std_clk_config_t clk = I2S_STD_CLK_DEFAULT_CONFIG(sample_rate);
+    clk.mclk_multiple = AUDIO_MCLK_MULTIPLE;
+    esp_err_t err = i2s_channel_reconfig_std_clock(tx_handle, &clk);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "reconfig I2S clock to %u Hz failed: %s",
+                 (unsigned)sample_rate, esp_err_to_name(err));
+    }
+    i2s_channel_enable(tx_handle);
+    ESP_LOGI(TAG, "PCM playback begin @ %u Hz", (unsigned)sample_rate);
+    return err;
+}
+
+esp_err_t audio_play_pcm_write(const int16_t *pcm, size_t num_samples, int channels)
+{
+    if (!pcm || num_samples == 0) {
+        return ESP_OK;
+    }
+    size_t written = 0;
+
+    if (channels == 1) {
+        /* Expand mono to the stereo I2S slot in chunks. */
+        static int16_t stereo[1024];
+        const size_t CHUNK = 512; /* mono samples per pass */
+        size_t i = 0;
+        while (i < num_samples) {
+            size_t n = num_samples - i;
+            if (n > CHUNK) n = CHUNK;
+            for (size_t k = 0; k < n; k++) {
+                stereo[2 * k]     = pcm[i + k];
+                stereo[2 * k + 1] = pcm[i + k];
+            }
+            esp_err_t err = i2s_channel_write(tx_handle, stereo, n * 2 * sizeof(int16_t),
+                                              &written, pdMS_TO_TICKS(1000));
+            if (err != ESP_OK) {
+                return err;
+            }
+            i += n;
+        }
+    } else {
+        esp_err_t err = i2s_channel_write(tx_handle, pcm, num_samples * sizeof(int16_t),
+                                          &written, pdMS_TO_TICKS(1000));
+        if (err != ESP_OK) {
+            return err;
+        }
+    }
+    return ESP_OK;
+}
+
+void audio_play_pcm_end(void)
+{
+    i2s_channel_disable(tx_handle);
+    i2s_std_clk_config_t clk = I2S_STD_CLK_DEFAULT_CONFIG(AUDIO_SAMPLE_RATE);
+    clk.mclk_multiple = AUDIO_MCLK_MULTIPLE;
+    i2s_channel_reconfig_std_clock(tx_handle, &clk);
+    i2s_channel_enable(tx_handle);
+    ESP_LOGI(TAG, "PCM playback end, clock restored to %d Hz", AUDIO_SAMPLE_RATE);
+}
+
 int cmd_audio_record(int argc, char **argv)
 {
     if (argc < 2) {

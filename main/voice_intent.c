@@ -55,16 +55,23 @@ voice_intent_t voice_intent_parse(const char *text)
         return INTENT_UNKNOWN;
     }
 
-    /* Order matters: more specific phrases first. */
-    if (contains(text, "我要回复") || contains(text, "要回复") || contains(text, "回复")) {
-        return INTENT_REPLY;
+    /* Order matters: negations and more specific phrases MUST be checked before
+     * the shorter positive phrases they contain (e.g. "不用回复" contains "回复",
+     * "不是" contains "是"). */
+
+    /* replay / re-listen */
+    if (contains(text, "重播") || contains(text, "重听") || contains(text, "再听") ||
+        contains(text, "再放") || contains(text, "重新播") || contains(text, "再播")) {
+        return INTENT_REPLAY;
     }
-    if (contains(text, "不用回复") || contains(text, "不回复") || contains(text, "不用")) {
+    /* "不用回复" / "不回复" / "不用" -> NO_REPLY  (before the REPLY check) */
+    if (contains(text, "不用回复") || contains(text, "不回复") ||
+        contains(text, "不需要回复") || contains(text, "不用")) {
         return INTENT_NO_REPLY;
     }
-    if (contains(text, "重播") || contains(text, "重听") || contains(text, "再听") ||
-        contains(text, "再放") || contains(text, "重新播")) {
-        return INTENT_REPLAY;
+    /* "我要回复" / "回复" */
+    if (contains(text, "我要回复") || contains(text, "要回复") || contains(text, "回复")) {
+        return INTENT_REPLY;
     }
     if (contains(text, "发留言") || contains(text, "留言") || contains(text, "发消息")) {
         return INTENT_SEND_MSG;
@@ -76,14 +83,15 @@ voice_intent_t voice_intent_parse(const char *text)
         contains(text, "拨打") || contains(text, "通话") || contains(text, "电话")) {
         return INTENT_CALL;
     }
-    if (contains(text, "正确") || contains(text, "对") || contains(text, "是的") ||
-        contains(text, "是") || contains(text, "好的") || contains(text, "要") ||
-        contains(text, "好")) {
-        return INTENT_YES;
-    }
+    /* Negative confirmations first (they contain positive substrings). */
     if (contains(text, "错误") || contains(text, "不对") || contains(text, "不是") ||
-        contains(text, "否") || contains(text, "不")) {
+        contains(text, "不要") || contains(text, "否") || contains(text, "不")) {
         return INTENT_NO;
+    }
+    if (contains(text, "正确") || contains(text, "是的") || contains(text, "是") ||
+        contains(text, "对") || contains(text, "好的") || contains(text, "好") ||
+        contains(text, "要")) {
+        return INTENT_YES;
     }
     return INTENT_UNKNOWN;
 }

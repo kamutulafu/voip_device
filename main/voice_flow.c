@@ -25,6 +25,7 @@
 
 #include "voip_client.h"
 #include "voip_media.h"
+#include "audio_mp3.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -369,17 +370,20 @@ static void extract_url(api_result_t *res, char *out, size_t sz)
     }
 }
 
-/* Play a received leave message.
- *
- * NOTE: soundPath is a remote MP3 URL. This device currently has no HTTP audio
- * downloader + MP3 decoder wired in (audio_play_from_file plays local WAV only).
- * TODO: download soundPath and decode/play it. For now we announce playback so
- * the interaction flow is complete and testable end-to-end. */
+/* Play a received leave message (remote MP3). */
 static void play_leave_msg(const leave_msg_t *m)
 {
     ESP_LOGI(TAG, "playing leave msg id=%s from=%s url=%s", m->id, m->from_name, m->sound_path);
-    dialogue_speak("留言正在播放");
-    /* TODO: fetch m->sound_path (mp3) -> decode -> audio playback */
+
+    if (m->sound_path[0] == '\0') {
+        dialogue_speak("这条留言没有语音内容哦");
+        return;
+    }
+
+    if (audio_play_mp3_url(m->sound_path) != ESP_OK) {
+        ESP_LOGW(TAG, "mp3 playback failed for %s", m->sound_path);
+        dialogue_speak("留言播放失败了呢");
+    }
 }
 
 static void mark_msg_read(session_t *s, const leave_msg_t *m)
