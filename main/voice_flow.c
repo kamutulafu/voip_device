@@ -789,16 +789,47 @@ static void handle_menu(session_t *s, bool restricted)
     }
 }
 
-/* ---- session keep-alive timer ----------------------------------------- */
+/* ---- session keep-alive task ------------------------------------------ */
+/*
+ * keepSs performs a full HTTPS request, which must NOT run inside an esp_timer
+ * callback (that task's stack is tiny and TLS overflows it). Use a dedicated
+ * task with an adequate stack instead.
+ */
 
-static esp_timer_handle_t s_keep_timer = NULL;
+static TaskHandle_t s_keep_task = NULL;
+static volatile bool s_keep_run = false;
 
-static void keep_alive_cb(void *arg)
+static void keep_alive_task(void *arg)
 {
     (void)arg;
-    if (s_session_active && s_sess.session_id[0]) {
-        session_keep_alive(&s_sess);
+    while (s_keep_run) {
+        /* sleep ~20s, but wake promptly when asked to stop */
+        for (int i = 0; i < 20 && s_keep_run; i++) {
+            vTaskDelay(pdMS_TO_TICKS(1000));
+        }
+        if (s_keep_run && s_sess.session_id[0]) {
+            session_keep_alive(&s_sess);
+        }
     }
+    s_keep_task = NULL;
+    vTaskDelete(NULL);
+}
+
+static void keep_alive_start(void)
+{
+    if (s_keep_task) {
+        return;
+    }
+    s_keep_run = true;
+    if (xTaskCreate(keep_alive_task, "voice_keepss", 8192, NULL, 4, &s_keep_task) != pdPASS) {
+        ESP_LOGW(TAG, "failed to create keep-alive task");
+        s_keep_run = false;
+    }
+}
+
+static void keep_alive_stop(void)
+{
+    s_keep_run = false; /* task observes the flag and self-deletes */
 }
 
 /* ---- main session task ------------------------------------------------- */
@@ -848,8 +879,8 @@ static void voice_task(void *arg)
     free(photo_buf);
 
     /* Start heartbeat now that we (may) have a session. */
-    if (s->session_id[0] && s_keep_timer) {
-        esp_timer_start_periodic(s_keep_timer, 20 * 1000000ULL);
+    if (s->session_id[0]) {
+        keep_alive_start();
     }
 
     if (ok) {
@@ -871,9 +902,7 @@ static void voice_task(void *arg)
     /* 1.5 farewell + close session. */
     dialogue_farewell();
 
-    if (s_keep_timer) {
-        esp_timer_stop(s_keep_timer);
-    }
+    keep_alive_stop();
     session_close(s);
 
     s_session_active = false;
@@ -892,16 +921,6 @@ esp_err_t voice_flow_init(void)
     unlink("/spiffs/face.jpg");
     unlink("/spiffs/reply.wav");
 
-    if (!s_keep_timer) {
-        const esp_timer_create_args_t args = {
-            .callback = keep_alive_cb,
-            .name = "voice_keepss",
-        };
-        esp_err_t err = esp_timer_create(&args, &s_keep_timer);
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "keep-alive timer create failed: %s", esp_err_to_name(err));
-        }
-    }
     return ESP_OK;
 }
 
