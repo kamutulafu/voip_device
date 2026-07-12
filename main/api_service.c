@@ -33,12 +33,13 @@ typedef struct {
     char *buf;
     size_t len;
     size_t cap;
+    bool manual;   /* when true, response body is read manually; handler skips accumulation */
 } http_resp_t;
 
 static esp_err_t http_event_handler(esp_http_client_event_t *evt) {
     if (evt->event_id == HTTP_EVENT_ON_DATA && evt->data_len > 0) {
         http_resp_t *r = (http_resp_t *)evt->user_data;
-        if (r) {
+        if (r && !r->manual) {
             if (r->len + evt->data_len + 1 > r->cap) {
                 size_t new_cap = r->cap == 0 ? 512 : r->cap * 2;
                 while (r->len + evt->data_len + 1 > new_cap) new_cap *= 2;
@@ -77,6 +78,10 @@ static api_result_t* api_execute_internal(
     }
 
     http_resp_t resp = {0};
+    /* Multipart/streaming upload reads the response body manually via
+     * esp_http_client_read(); the event handler must NOT also accumulate it
+     * (it fires during read and would duplicate/corrupt the body). */
+    resp.manual = (file_path != NULL) || (file_buf != NULL && file_buf_len > 0);
     esp_http_client_config_t cfg = {
         .url = url,
         .method = method,
@@ -193,11 +198,16 @@ static api_result_t* api_execute_internal(
             len = snprintf(chunk, sizeof(chunk), "\r\n--%s--\r\n", boundary);
             esp_http_client_write(client, chunk, len);
             esp_http_client_fetch_headers(client);
+            /* Reset buffer so only the response data (read below) is kept.
+             * The event-handler may have written partial data during the upload
+             * phase; clearing here prevents double-accumulation. */
+            resp.len = 0;
+            if (resp.buf) resp.buf[0] = '\0';
         }
         
-        resp.len = 0;
-        if (resp.buf) resp.buf[0] = '\0';
-        
+        /* When using esp_http_client_open() (streaming upload), the
+         * HTTP_EVENT_ON_DATA callback is NOT triggered for the response body.
+         * We must accumulate the response manually via esp_http_client_read(). */
         char rbuf[512];
         int rlen = 0;
         while ((rlen = esp_http_client_read(client, rbuf, sizeof(rbuf))) > 0) {
