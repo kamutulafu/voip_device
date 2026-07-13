@@ -456,7 +456,7 @@ esp_err_t audio_record_mono_pcm(int16_t **out_buf, size_t *out_num_samples, uint
 
         size_t stereo_frames = bytes_read / (2 * sizeof(int16_t)); // L+R per frame
         for (size_t i = 0; i < stereo_frames && mono_written < mono_samples; i++) {
-            mono[mono_written++] = stereo[2 * i]; // keep left channel
+            mono[mono_written++] = stereo[2 * i + 1]; // keep right channel
         }
     }
 

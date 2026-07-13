@@ -410,12 +410,12 @@ static void media_push_task(void *pvParameter)
 
         /* Audio: always pushed in real time */
         if (audio_read_raw(audio_buf, 1024, &bytes_read, portMAX_DELAY) == ESP_OK && bytes_read > 0) {
-            // Downmix stereo (16-bit) to mono (16-bit) in place by keeping the left channel.
+            // Downmix stereo (16-bit) to mono (16-bit) in place by keeping the right channel.
             // Since we configured I2S slot as stereo, each frame is 4 bytes (L + R).
             int16_t *samples = (int16_t *)audio_buf;
             size_t num_frames = bytes_read / 4;
             for (size_t i = 0; i < num_frames; i++) {
-                samples[i] = samples[2 * i];
+                samples[i] = samples[2 * i + 1];
             }
             size_t mono_bytes = num_frames * sizeof(int16_t);
 
