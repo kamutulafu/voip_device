@@ -124,6 +124,66 @@ static esp_err_t set_codec_control(int fd, uint32_t ctrl_class, uint32_t id, int
     return ESP_OK;
 }
 
+/* ----- media recv task -------------------------------------------------- */
+
+static void media_recv_task(void *pvParameter)
+{
+    int sock = (int)(intptr_t)pvParameter;
+    ESP_LOGI(TAG, "VoIP media recv task started");
+
+    uint8_t *recv_hdr = malloc(5);
+    uint8_t *pcm_buf = malloc(2048);
+
+    if (!recv_hdr || !pcm_buf) {
+        ESP_LOGE(TAG, "Failed to allocate media recv buffers");
+        free(recv_hdr);
+        free(pcm_buf);
+        vTaskDelete(NULL);
+        return;
+    }
+
+    while (1) {
+        int received = 0;
+        while (received < 5) {
+            int n = recv(sock, recv_hdr + received, 5 - received, 0);
+            if (n <= 0) {
+                ESP_LOGW(TAG, "media_recv_task: socket closed or error");
+                goto exit;
+            }
+            received += n;
+        }
+
+        uint8_t type = recv_hdr[0];
+        uint32_t length = *(uint32_t *)(recv_hdr + 1);
+
+        if (length > 2048) {
+            ESP_LOGE(TAG, "Received packet too large: %u", (unsigned)length);
+            goto exit;
+        }
+
+        received = 0;
+        while (received < length) {
+            int n = recv(sock, pcm_buf + received, length - received, 0);
+            if (n <= 0) {
+                ESP_LOGW(TAG, "media_recv_task: socket closed or error reading payload");
+                goto exit;
+            }
+            received += n;
+        }
+
+        if (type == 0) {
+            size_t num_samples = length / 2;
+            audio_play_pcm_write((int16_t *)pcm_buf, num_samples, 1);
+        }
+    }
+
+exit:
+    free(recv_hdr);
+    free(pcm_buf);
+    ESP_LOGI(TAG, "VoIP media recv task stopped");
+    vTaskDelete(NULL);
+}
+
 /* ----- media push task -------------------------------------------------- */
 
 static void media_push_task(void *pvParameter)
@@ -168,6 +228,11 @@ static void media_push_task(void *pvParameter)
         goto cleanup;
     }
     ESP_LOGI(TAG, "Connected! Start pushing media...");
+
+    // Create the receive task to handle downstream audio
+    if (xTaskCreate(media_recv_task, "voip_media_recv", 4096, (void *)(intptr_t)sock, 5, NULL) != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create media recv task");
+    }
 
     use_http = (port == 80 || port == 443);
     if (use_http) {
@@ -345,7 +410,16 @@ static void media_push_task(void *pvParameter)
 
         /* Audio: always pushed in real time */
         if (audio_read_raw(audio_buf, 1024, &bytes_read, portMAX_DELAY) == ESP_OK && bytes_read > 0) {
-            if (send_media_packet(sock, 0, audio_buf, bytes_read, use_http) < 0) {
+            // Downmix stereo (16-bit) to mono (16-bit) in place by keeping the left channel.
+            // Since we configured I2S slot as stereo, each frame is 4 bytes (L + R).
+            int16_t *samples = (int16_t *)audio_buf;
+            size_t num_frames = bytes_read / 4;
+            for (size_t i = 0; i < num_frames; i++) {
+                samples[i] = samples[2 * i];
+            }
+            size_t mono_bytes = num_frames * sizeof(int16_t);
+
+            if (send_media_packet(sock, 0, audio_buf, mono_bytes, use_http) < 0) {
                 break;
             }
 
