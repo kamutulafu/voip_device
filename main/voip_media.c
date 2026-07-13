@@ -124,6 +124,48 @@ static esp_err_t set_codec_control(int fd, uint32_t ctrl_class, uint32_t id, int
     return ESP_OK;
 }
 
+/* ----- uplink audio conditioning ---------------------------------------- */
+
+/* Condition the captured mic PCM before it is pushed to the media server.
+ *
+ * The device speaker/PA, camera and Wi-Fi share the board power rails, so the
+ * mic signal tends to carry a DC offset and low-frequency power-supply hum that
+ * the far end perceives as a strong "current" noise. We run a first-order DC
+ * blocker (high-pass, corner ~60 Hz) to remove that, followed by a hard clamp
+ * so the high-pass transient can never wrap around into harsh static.
+ *
+ * State is kept across packets; call audio_uplink_reset() at the start of each
+ * call so a new session does not inherit the previous filter state.
+ */
+static int32_t s_hpf_prev_x = 0;
+static int32_t s_hpf_prev_y = 0;
+
+static void audio_uplink_reset(void)
+{
+    s_hpf_prev_x = 0;
+    s_hpf_prev_y = 0;
+}
+
+static void audio_condition_mono(int16_t *samples, size_t num_samples)
+{
+    /* R/256 ~= 0.977 -> high-pass corner around 60 Hz at 16 kHz. */
+    const int32_t R = 250;
+    for (size_t i = 0; i < num_samples; i++) {
+        int32_t x = samples[i];
+        /* y[n] = x[n] - x[n-1] + R * y[n-1] */
+        int32_t y = x - s_hpf_prev_x + ((R * s_hpf_prev_y) >> 8);
+        s_hpf_prev_x = x;
+        s_hpf_prev_y = y;
+
+        if (y > 32767) {
+            y = 32767;
+        } else if (y < -32768) {
+            y = -32768;
+        }
+        samples[i] = (int16_t)y;
+    }
+}
+
 /* ----- media recv task -------------------------------------------------- */
 
 static void media_recv_task(void *pvParameter)
@@ -378,6 +420,9 @@ static void media_push_task(void *pvParameter)
         goto cleanup;
     }
 
+    /* Fresh uplink audio filter state for this call. */
+    audio_uplink_reset();
+
     const int64_t video_interval_us = 1000000 / VOIP_VIDEO_FPS;
     int64_t last_video_us = 0;
 
@@ -417,6 +462,11 @@ static void media_push_task(void *pvParameter)
             for (size_t i = 0; i < num_frames; i++) {
                 samples[i] = samples[2 * i + 1];
             }
+
+            /* Remove DC/low-frequency hum and clamp peaks before sending so the
+             * far end does not hear the "current" noise. */
+            audio_condition_mono(samples, num_frames);
+
             size_t mono_bytes = num_frames * sizeof(int16_t);
 
             if (send_media_packet(sock, 0, audio_buf, mono_bytes, use_http) < 0) {

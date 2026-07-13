@@ -128,9 +128,14 @@ static esp_err_t es8311_init_internal(void)
     ret |= es8311_write_reg(0x37, 0x08); // Bypass DAC equalizer
 
     // Microphone configuration
-    ret |= es8311_write_reg(0x17, 0xC8); // Set ADC gain
-    ret |= es8311_write_reg(0x14, 0x1A); // Enable analog MIC and max PGA gain
-    ret |= es8311_write_reg(0x16, 0x03); // Mic gain to +18dB (ES8311_MIC_GAIN_18DB)
+    // NOTE: the capture chain was previously running with a very high total
+    // input gain (mic +18dB + digital ADC +4.5dB on top of the analog PGA).
+    // For near-field speech this clips the ADC, which the far end (WeChat
+    // mini-program) hears as loud "static / current" noise riding on the voice.
+    // Keep the gain moderate to leave headroom and avoid clipping.
+    ret |= es8311_write_reg(0x17, 0xBF); // ADC digital volume = 0 dB (was +4.5dB)
+    ret |= es8311_write_reg(0x14, 0x1A); // Enable analog MIC (recommended analog init)
+    ret |= es8311_write_reg(0x16, 0x02); // Mic gain +12dB (was +18dB) to avoid clipping
 
     // Unmute DAC and set default speaker volume
     ret |= es8311_write_reg(ES8311_REG_DAC_MUTE, 0x00);
