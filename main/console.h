@@ -1,6 +1,7 @@
 #ifndef MAIN_CONSOLE_H
 #define MAIN_CONSOLE_H
 
+#include <stdbool.h>
 #include "esp_err.h"
 #include "esp_console.h"
 
@@ -30,8 +31,16 @@ esp_err_t console_register_cmd(const esp_console_cmd_t *cmd);
  */
 esp_err_t console_start(void);
 
+/**
+ * @brief Whether console_init() has completed successfully.
+ *
+ * In Release builds the REPL is never started; this returns false.
+ */
+bool console_is_enabled(void);
+
 #ifdef __cplusplus
 }
 #endif
 
 #endif // MAIN_CONSOLE_H
+

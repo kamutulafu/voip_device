@@ -9,6 +9,19 @@
 #define BACKEND_BASE_URL    "https://gateway.tdskynet.com"
 
 /* =========================================================================
+ * 1.1 Hardware pins (ESP32-P4)
+ * ========================================================================= */
+
+/**
+ * Physical wake button (replaces / supplements console "voice_wake" for test).
+ * ESP32-P4 GPIO45 = package pin 73.
+ * Wiring: one side to GPIO45, other side to GND (active-low, uses internal pull-up).
+ */
+#define WAKE_BUTTON_GPIO            45
+#define WAKE_BUTTON_ACTIVE_LEVEL    0       /* 0 = pressed when pin is low */
+#define WAKE_BUTTON_DEBOUNCE_MS     40
+
+/* =========================================================================
  * 2. WeChat Cloud VoIP Configuration
  * ========================================================================= */
 

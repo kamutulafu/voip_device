@@ -10,8 +10,10 @@ extern "C" {
 /**
  * @brief Initialize the voice interaction subsystem (idempotent).
  *
- * Sets the backend base URL. Does not start any interaction; call
- * voice_flow_wake() (or the "voice_wake" console command) to begin a session.
+ * Sets the backend base URL and installs the physical wake button on
+ * WAKE_BUTTON_GPIO (GPIO45). Does not start any interaction; call
+ * voice_flow_wake(), press the button, or use the "voice_wake" console
+ * command to begin a session.
  */
 esp_err_t voice_flow_init(void);
 
@@ -21,6 +23,8 @@ esp_err_t voice_flow_init(void);
  * Runs the state machine (greeting -> face recognition -> menu/messages/... ->
  * farewell) on a dedicated task. Returns immediately; only one session runs at
  * a time (further triggers are ignored while a session is active).
+ *
+ * Trigger sources: physical wake button (GPIO45), or console "voice_wake".
  */
 void voice_flow_wake(void);
 

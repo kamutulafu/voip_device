@@ -746,6 +746,13 @@ CONFIG_PARTITION_TABLE_MD5=y
 # end of Partition Table
 
 #
+# ChildHelp App build
+#
+CONFIG_APP_BUILD_DEBUG=y
+# CONFIG_APP_BUILD_RELEASE is not set
+# end of ChildHelp App build
+
+#
 # Compiler options
 #
 # CONFIG_COMPILER_OPTIMIZATION_DEBUG is not set

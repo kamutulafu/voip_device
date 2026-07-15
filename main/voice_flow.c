@@ -5,7 +5,9 @@
  *   IDLE -> GREETING(face recognition) -> {MENU | MESSAGES | RESTRICTED} ->
  *   {send message | add friend | call contact} -> FAREWELL -> IDLE
  *
- * Wake is simulated by the "voice_wake" console command (voice_flow_wake()).
+ * Wake sources:
+ *   - physical button on WAKE_BUTTON_GPIO (GPIO45 / pin 73)
+ *   - console command "voice_wake" (voice_flow_wake())
  * A dedicated FreeRTOS task runs one session at a time.
  */
 
@@ -36,6 +38,8 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/queue.h"
+#include "driver/gpio.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
@@ -91,6 +95,9 @@ typedef struct {
 
 static session_t s_sess;
 static volatile bool s_session_active = false;
+
+/* Wake button (GPIO45): ISR posts to queue, task debounces and calls wake. */
+static QueueHandle_t s_wake_btn_queue = NULL;
 
 /* ---- small helpers ----------------------------------------------------- */
 
@@ -914,6 +921,109 @@ static void voice_task(void *arg)
     vTaskDelete(NULL);
 }
 
+/* ---- physical wake button (GPIO45) ------------------------------------ */
+
+static void IRAM_ATTR wake_button_isr(void *arg)
+{
+    (void)arg;
+    BaseType_t hp = pdFALSE;
+    uint32_t gpio_num = (uint32_t)WAKE_BUTTON_GPIO;
+    if (s_wake_btn_queue) {
+        xQueueSendFromISR(s_wake_btn_queue, &gpio_num, &hp);
+    }
+    if (hp) {
+        portYIELD_FROM_ISR();
+    }
+}
+
+static void wake_button_task(void *arg)
+{
+    (void)arg;
+    uint32_t gpio_num;
+
+    ESP_LOGI(TAG, "wake button task ready (GPIO%d, active-%s)",
+             WAKE_BUTTON_GPIO,
+             WAKE_BUTTON_ACTIVE_LEVEL == 0 ? "low" : "high");
+
+    for (;;) {
+        if (xQueueReceive(s_wake_btn_queue, &gpio_num, portMAX_DELAY) != pdTRUE) {
+            continue;
+        }
+
+        /* Debounce: wait, then confirm level still active. */
+        vTaskDelay(pdMS_TO_TICKS(WAKE_BUTTON_DEBOUNCE_MS));
+        if (gpio_get_level(WAKE_BUTTON_GPIO) != WAKE_BUTTON_ACTIVE_LEVEL) {
+            continue;
+        }
+
+        /* Drain extra edges generated during bounce / hold. */
+        uint32_t dummy;
+        while (xQueueReceive(s_wake_btn_queue, &dummy, 0) == pdTRUE) {
+        }
+
+        ESP_LOGI(TAG, "wake button pressed -> voice_flow_wake()");
+        voice_flow_wake();
+
+        /* Wait for release so one press only starts one session. */
+        while (gpio_get_level(WAKE_BUTTON_GPIO) == WAKE_BUTTON_ACTIVE_LEVEL) {
+            vTaskDelay(pdMS_TO_TICKS(20));
+        }
+        vTaskDelay(pdMS_TO_TICKS(WAKE_BUTTON_DEBOUNCE_MS));
+
+        while (xQueueReceive(s_wake_btn_queue, &dummy, 0) == pdTRUE) {
+        }
+    }
+}
+
+static esp_err_t wake_button_init(void)
+{
+    if (s_wake_btn_queue) {
+        return ESP_OK; /* already initialized */
+    }
+
+    s_wake_btn_queue = xQueueCreate(4, sizeof(uint32_t));
+    if (!s_wake_btn_queue) {
+        ESP_LOGE(TAG, "wake button queue create failed");
+        return ESP_ERR_NO_MEM;
+    }
+
+    gpio_config_t io = {
+        .pin_bit_mask = (1ULL << WAKE_BUTTON_GPIO),
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = (WAKE_BUTTON_ACTIVE_LEVEL == 0) ? GPIO_PULLUP_ENABLE : GPIO_PULLUP_DISABLE,
+        .pull_down_en = (WAKE_BUTTON_ACTIVE_LEVEL != 0) ? GPIO_PULLDOWN_ENABLE : GPIO_PULLDOWN_DISABLE,
+        .intr_type = (WAKE_BUTTON_ACTIVE_LEVEL == 0) ? GPIO_INTR_NEGEDGE : GPIO_INTR_POSEDGE,
+    };
+    esp_err_t err = gpio_config(&io);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "wake button gpio_config failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    /* May already be installed by another driver; ignore that case. */
+    err = gpio_install_isr_service(0);
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(TAG, "gpio_install_isr_service failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    err = gpio_isr_handler_add(WAKE_BUTTON_GPIO, wake_button_isr, (void *)(uint32_t)WAKE_BUTTON_GPIO);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "wake button isr add failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    if (xTaskCreate(wake_button_task, "wake_btn", 3072, NULL, 6, NULL) != pdPASS) {
+        ESP_LOGE(TAG, "wake button task create failed");
+        gpio_isr_handler_remove(WAKE_BUTTON_GPIO);
+        return ESP_ERR_NO_MEM;
+    }
+
+    ESP_LOGI(TAG, "wake button ready: GPIO%d (package pin 73), press = voice_wake",
+             WAKE_BUTTON_GPIO);
+    return ESP_OK;
+}
+
 /* ---- public API + console command ------------------------------------- */
 
 esp_err_t voice_flow_init(void)
@@ -924,6 +1034,13 @@ esp_err_t voice_flow_init(void)
     unlink("/spiffs/dump.h264");
     unlink("/spiffs/face.jpg");
     unlink("/spiffs/reply.wav");
+
+    esp_err_t btn_err = wake_button_init();
+    if (btn_err != ESP_OK) {
+        ESP_LOGW(TAG, "wake button init failed (%s); console voice_wake still available",
+                 esp_err_to_name(btn_err));
+        /* Do not fail whole voice subsystem if only the button failed. */
+    }
 
     return ESP_OK;
 }
@@ -950,7 +1067,8 @@ int cmd_voice_wake(int argc, char **argv)
         printf("A voice session is already running.\n");
         return 1;
     }
-    printf("Wake triggered. Starting voice interaction session...\n");
+    printf("Wake triggered (console). Starting voice interaction session...\n");
+    printf("(Physical button on GPIO%d works the same way.)\n", WAKE_BUTTON_GPIO);
     voice_flow_wake();
     return 0;
 }
@@ -959,7 +1077,7 @@ void register_voice_wake_cmd(void)
 {
     const esp_console_cmd_t cmd = {
         .command = "voice_wake",
-        .help = "Simulate the wake word and run one voice interaction session",
+        .help = "Start voice session (same as wake button on GPIO45)",
         .hint = NULL,
         .func = &cmd_voice_wake,
     };

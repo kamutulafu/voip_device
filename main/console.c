@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <string.h>
+#include <stdbool.h>
 #include "esp_log.h"
 #include "esp_console.h"
 #include "console.h"
@@ -7,6 +8,11 @@
 static const char *TAG = "console";
 static esp_console_repl_t *s_repl = NULL;
 static bool s_initialized = false;
+
+bool console_is_enabled(void)
+{
+    return s_initialized && (s_repl != NULL);
+}
 
 esp_err_t console_init(void)
 {

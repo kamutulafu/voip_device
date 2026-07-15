@@ -2,47 +2,33 @@
 #include "esp_err.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
-#include "console.h"
+#include "esp_event.h"
+#include "esp_netif.h"
+
+#include "app_build.h"
 #include "spiffs_storage.h"
+#include "voice_flow.h"
+#include "wifi_manager.h"
+
+#if APP_BUILD_DEBUG
+#include "console.h"
 #include "camera_capture.h"
 #include "uvc_stream.h"
 #include "audio_driver.h"
-#include "wifi_manager.h"
 #include "asr_xfyun.h"
 #include "tts_xfyun.h"
 #include "voip_client.h"
-#include "esp_event.h"
-#include "esp_netif.h"
 #include "api_test.h"
-#include "voice_flow.h"
 
 int cmd_zmodem_send(int argc, char **argv);
 int cmd_zmodem_recv(int argc, char **argv);
+#endif
 
 static const char *TAG = "main";
 
-
-
-void app_main(void)
+#if APP_BUILD_DEBUG
+static void register_debug_console_commands(void)
 {
-    // Initialize NVS
-    esp_err_t ret = nvs_flash_init();
-    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_ERROR_CHECK(nvs_flash_erase());
-        ret = nvs_flash_init();
-    }
-    ESP_ERROR_CHECK(ret);
-
-    // Initialize Netif and Default Event Loop
-    ESP_ERROR_CHECK(esp_netif_init());
-    ESP_ERROR_CHECK(esp_event_loop_create_default());
-
-    // Initialize SPIFFS
-    ESP_ERROR_CHECK(init_spiffs());
-
-    ESP_LOGI(TAG, "Initializing console...");
-    ESP_ERROR_CHECK(console_init());
-
     // Register UVC commands
     const esp_console_cmd_t cmd_uvc_init_cfg = {
         .command = "uvc_init",
@@ -170,13 +156,46 @@ void app_main(void)
     // Register API test command
     register_api_test_cmd();
 
-    // Initialize the voice interaction subsystem and register its wake command
-    ESP_ERROR_CHECK(voice_flow_init());
+    // Console equivalent of the physical wake button
     register_voice_wake_cmd();
+}
+#endif /* APP_BUILD_DEBUG */
+
+void app_main(void)
+{
+    // Initialize NVS
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        ret = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(ret);
+
+    // Initialize Netif and Default Event Loop
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+
+    // Initialize SPIFFS
+    ESP_ERROR_CHECK(init_spiffs());
+
+    ESP_LOGI(TAG, "Build type: %s", APP_BUILD_TYPE_STR);
+
+#if APP_BUILD_DEBUG
+    ESP_LOGI(TAG, "Initializing console (msh)...");
+    ESP_ERROR_CHECK(console_init());
+    register_debug_console_commands();
+#endif
+
+    // Voice subsystem + GPIO45 wake button (both Debug and Release)
+    ESP_ERROR_CHECK(voice_flow_init());
 
     // Trigger auto-connection to saved WiFi in background
     wifi_manager_start_autoconnect();
 
+#if APP_BUILD_DEBUG
     ESP_LOGI(TAG, "Starting console REPL...");
     ESP_ERROR_CHECK(console_start());
+#else
+    ESP_LOGI(TAG, "Release: msh console disabled (use wake button GPIO45)");
+#endif
 }

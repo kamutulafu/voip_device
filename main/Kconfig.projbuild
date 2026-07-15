@@ -1,0 +1,18 @@
+menu "ChildHelp App build"
+
+# Choice name must NOT be APP_BUILD_TYPE — that symbol is already used by ESP-IDF.
+choice CHILDHELP_APP_BUILD
+    prompt "App build type"
+    default APP_BUILD_DEBUG
+    help
+        Debug: enable UART console (msh) and all test commands.
+        Release: disable console REPL; production path (wake button / voice / WiFi).
+
+    config APP_BUILD_DEBUG
+        bool "Debug (enable msh console)"
+
+    config APP_BUILD_RELEASE
+        bool "Release (disable msh console)"
+endchoice
+
+endmenu
