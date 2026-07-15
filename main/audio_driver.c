@@ -133,9 +133,9 @@ static esp_err_t es8311_init_internal(void)
     // For near-field speech this clips the ADC, which the far end (WeChat
     // mini-program) hears as loud "static / current" noise riding on the voice.
     // Keep the gain moderate to leave headroom and avoid clipping.
-    ret |= es8311_write_reg(0x17, 0xBF); // ADC digital volume = 0 dB (was +4.5dB)
+    ret |= es8311_write_reg(0x17, 0xC8); // Restore ADC digital volume to +4.5 dB (was 0 dB)
     ret |= es8311_write_reg(0x14, 0x1A); // Enable analog MIC (recommended analog init)
-    ret |= es8311_write_reg(0x16, 0x02); // Mic gain +12dB (was +18dB) to avoid clipping
+    ret |= es8311_write_reg(0x16, 0x03); // Restore Mic gain to +18 dB (was +12 dB)
 
     // Unmute DAC and set default speaker volume
     ret |= es8311_write_reg(ES8311_REG_DAC_MUTE, 0x00);
@@ -461,7 +461,7 @@ esp_err_t audio_record_mono_pcm(int16_t **out_buf, size_t *out_num_samples, uint
 
         size_t stereo_frames = bytes_read / (2 * sizeof(int16_t)); // L+R per frame
         for (size_t i = 0; i < stereo_frames && mono_written < mono_samples; i++) {
-            mono[mono_written++] = stereo[2 * i + 1]; // keep right channel
+            mono[mono_written++] = stereo[2 * i]; // keep left channel
         }
     }
 
@@ -540,15 +540,22 @@ esp_err_t audio_play_from_file(const char *filename)
         uint32_t bytes_to_write = bytes_read;
 
         if (header.num_channels == 1) {
-            // Convert mono to stereo (16-bit)
+            // Convert mono to stereo (16-bit), keeping only Left channel
             int16_t *mono_samples = (int16_t *)read_buf;
             int16_t *stereo_samples = (int16_t *)mono_to_stereo_buf;
             uint32_t num_samples = bytes_read / 2;
             for (uint32_t i = 0; i < num_samples; i++) {
                 stereo_samples[2 * i] = mono_samples[i];
-                stereo_samples[2 * i + 1] = mono_samples[i];
+                stereo_samples[2 * i + 1] = 0; // Mute Right channel
             }
             bytes_to_write = bytes_read * 2;
+        } else if (header.num_channels == 2) {
+            // Mute Right channel of the stereo buffer
+            int16_t *stereo_samples = (int16_t *)read_buf;
+            uint32_t num_samples = bytes_read / 4;
+            for (uint32_t i = 0; i < num_samples; i++) {
+                stereo_samples[2 * i + 1] = 0; // Mute Right channel
+            }
         }
 
         esp_err_t ret = i2s_channel_write(tx_handle, play_buf, bytes_to_write, &bytes_written, pdMS_TO_TICKS(1000));
@@ -625,6 +632,13 @@ esp_err_t audio_record_to_mem(uint8_t **out_buf, size_t *out_len, uint32_t durat
 
         esp_err_t ret = i2s_channel_read(rx_handle, write_ptr + total_recorded_bytes, chunk, &bytes_read, pdMS_TO_TICKS(1000));
         if (ret == ESP_OK && bytes_read > 0) {
+            // Copy Right (microphone) channel to Left channel, and mute the Right channel.
+            int16_t *samples = (int16_t *)(write_ptr + total_recorded_bytes);
+            size_t num_samples = bytes_read / sizeof(int16_t);
+            for (size_t i = 0; i < num_samples / 2; i++) {
+                samples[2 * i] = samples[2 * i + 1];
+                samples[2 * i + 1] = 0;
+            }
             total_recorded_bytes += bytes_read;
         } else {
             ESP_LOGW(TAG, "I2S read timeout or error: %s", esp_err_to_name(ret));
@@ -762,7 +776,7 @@ esp_err_t audio_play_pcm_write(const int16_t *pcm, size_t num_samples, int chann
     size_t written = 0;
 
     if (channels == 1) {
-        /* Expand mono to the stereo I2S slot in chunks. */
+        /* Expand mono to the stereo I2S slot in chunks, muting Right channel. */
         static int16_t stereo[1024];
         const size_t CHUNK = 512; /* mono samples per pass */
         size_t i = 0;
@@ -771,7 +785,7 @@ esp_err_t audio_play_pcm_write(const int16_t *pcm, size_t num_samples, int chann
             if (n > CHUNK) n = CHUNK;
             for (size_t k = 0; k < n; k++) {
                 stereo[2 * k]     = pcm[i + k];
-                stereo[2 * k + 1] = pcm[i + k];
+                stereo[2 * k + 1] = 0; // Mute Right channel
             }
             esp_err_t err = i2s_channel_write(tx_handle, stereo, n * 2 * sizeof(int16_t),
                                               &written, pdMS_TO_TICKS(1000));
@@ -781,10 +795,23 @@ esp_err_t audio_play_pcm_write(const int16_t *pcm, size_t num_samples, int chann
             i += n;
         }
     } else {
-        esp_err_t err = i2s_channel_write(tx_handle, pcm, num_samples * sizeof(int16_t),
-                                          &written, pdMS_TO_TICKS(1000));
-        if (err != ESP_OK) {
-            return err;
+        /* Play stereo PCM by copying and muting Right channel to avoid modifying const flash data. */
+        static int16_t stereo_play[1024];
+        const size_t CHUNK = 512; /* stereo samples (frames) per pass */
+        size_t i = 0;
+        while (i < num_samples) {
+            size_t n = num_samples - i;
+            if (n > CHUNK) n = CHUNK;
+            for (size_t k = 0; k < n; k++) {
+                stereo_play[2 * k]     = pcm[2 * (i + k)]; // Left channel
+                stereo_play[2 * k + 1] = 0;               // Mute Right channel
+            }
+            esp_err_t err = i2s_channel_write(tx_handle, stereo_play, n * 2 * sizeof(int16_t),
+                                              &written, pdMS_TO_TICKS(1000));
+            if (err != ESP_OK) {
+                return err;
+            }
+            i += n;
         }
     }
     return ESP_OK;
