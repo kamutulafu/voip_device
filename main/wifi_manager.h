@@ -23,6 +23,11 @@ esp_err_t wifi_manager_join_sta(const char* ssid, const char* pass);
 void wifi_manager_start_autoconnect(void);
 
 /**
+ * @brief Start the WiFi AP provisioning mode with captive portal.
+ */
+void wifi_manager_start_ap(void);
+
+/**
  * @brief Check if the WiFi is currently connected.
  * 
  * @return true if connected, false otherwise
