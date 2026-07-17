@@ -8,13 +8,26 @@
 extern "C" {
 #endif
 
+#define PATH_V_SYS_START   "/spiffs/v_sys_start.wav"
+#define PATH_V_NET_OK      "/spiffs/v_net_ok.wav"
+#define PATH_V_NET_ERR     "/spiffs/v_net_err.wav"
+#define PATH_V_SYS_ERR     "/spiffs/v_sys_err.wav"
+
+#define TEXT_V_SYS_START   "系统启动成功，正在检查网络"
+#define TEXT_V_NET_OK      "网络连接成功"
+#define TEXT_V_NET_ERR     "网络连接失败"
+#define TEXT_V_SYS_ERR     "哎呀，系统开小差了"
+
 /**
- * @brief Synthesize UTF-8 text with iFlytek TTS and play it on the speaker.
- *        Blocks until playback finishes. Requires WiFi.
+ * @brief Play a local WAV voice file from filesystem if it exists.
+ *        Otherwise fall back to dynamic TTS synthesis.
  *
- * @param text UTF-8 text to speak.
+ * @param path Absolute path to the WAV file in SPIFFS (e.g. "/spiffs/v_sys_start.wav")
+ * @param fallback_text UTF-8 text to speak if file does not exist or fails to play.
  * @return ESP_OK on success.
  */
+esp_err_t play_local_voice(const char *path, const char *fallback_text);
+
 esp_err_t dialogue_speak(const char *text);
 
 /**
@@ -55,6 +68,12 @@ void dialogue_ask_retry(void);
 
 /** 1.5 统一告别语。 */
 void dialogue_farewell(void);
+
+/**
+ * @brief Console command to update the local voice files.
+ *        Synthesizes the four local voice files and saves them to SPIFFS.
+ */
+int cmd_voice_update(int argc, char **argv);
 
 #ifdef __cplusplus
 }

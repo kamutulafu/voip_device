@@ -1,12 +1,15 @@
 #include "dialogue.h"
 #include "tts_xfyun.h"
 #include "audio_driver.h"
+#include "wifi_manager.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
 #include <math.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include "esp_log.h"
 
@@ -15,6 +18,26 @@ static const char *TAG = "dialogue";
 /* Scratch file reused for every TTS utterance. */
 #define TTS_PLAY_PATH   "/spiffs/tts_play.wav"
 #define BEEP_PATH       "/spiffs/beep.wav"
+
+esp_err_t play_local_voice(const char *path, const char *fallback_text)
+{
+    if (!path) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    struct stat st;
+    if (stat(path, &st) == 0 && S_ISREG(st.st_mode)) {
+        ESP_LOGI(TAG, "Playing local voice: %s", path);
+        (void)audio_set_volume(75);
+        return audio_play_from_file(path);
+    }
+
+    ESP_LOGW(TAG, "Local voice file %s not found, falling back to TTS: %s", path, fallback_text ? fallback_text : "");
+    if (fallback_text && fallback_text[0] != '\0') {
+        return dialogue_speak(fallback_text);
+    }
+    return ESP_ERR_NOT_FOUND;
+}
 
 esp_err_t dialogue_speak(const char *text)
 {
@@ -31,7 +54,14 @@ esp_err_t dialogue_speak(const char *text)
     size_t wav_len = 0;
     esp_err_t err = tts_xfyun_synthesize_to_mem(text, &wav_buf, &wav_len);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "TTS synthesis failed: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "TTS synthesis failed: %s. Trying fallback local error voice.", esp_err_to_name(err));
+        // Fallback to local system error voice!
+        struct stat st;
+        if (stat(PATH_V_SYS_ERR, &st) == 0 && S_ISREG(st.st_mode)) {
+            audio_play_from_file(PATH_V_SYS_ERR);
+        } else {
+            ESP_LOGW(TAG, "Fallback voice file %s not found", PATH_V_SYS_ERR);
+        }
         return err;
     }
 
@@ -164,4 +194,43 @@ void dialogue_ask_retry(void)
 void dialogue_farewell(void)
 {
     dialogue_speak("有需要再找我，拜拜~");
+}
+
+int cmd_voice_update(int argc, char **argv)
+{
+    (void)argc; (void)argv;
+    if (!wifi_manager_is_connected()) {
+        printf("Error: WiFi is not connected. Please connect to WiFi first using: wifi_join <ssid> <password>\n");
+        return 1;
+    }
+
+    printf("Starting local voice updates...\n");
+
+    const struct {
+        const char *text;
+        const char *path;
+        const char *desc;
+    } voices[] = {
+        { TEXT_V_SYS_START, PATH_V_SYS_START, "1. 系统启动成功，正在检查网络" },
+        { TEXT_V_NET_OK,    PATH_V_NET_OK,    "2. 网络连接成功" },
+        { TEXT_V_NET_ERR,   PATH_V_NET_ERR,   "3. 网络连接失败" },
+        { TEXT_V_SYS_ERR,   PATH_V_SYS_ERR,   "4. 哎呀，系统开小差了" }
+    };
+
+    int success_count = 0;
+    for (int i = 0; i < 4; i++) {
+        printf("Synthesizing [%s] -> %s...\n", voices[i].desc, voices[i].path);
+        // Remove old file first to ensure fresh synthesis
+        unlink(voices[i].path);
+        esp_err_t err = tts_xfyun_synthesize_to_file(voices[i].text, voices[i].path);
+        if (err == ESP_OK) {
+            printf("Successfully updated %s\n", voices[i].path);
+            success_count++;
+        } else {
+            printf("Failed to update %s: %s\n", voices[i].path, esp_err_to_name(err));
+        }
+    }
+
+    printf("Local voice update completed. Success: %d/4\n", success_count);
+    return (success_count == 4) ? 0 : 1;
 }

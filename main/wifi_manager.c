@@ -20,6 +20,7 @@
 #include "lwip/sockets.h"
 #include "lwip/netdb.h"
 #include "wifi_manager.h"
+#include "dialogue.h"
 
 static const char *TAG = "wifi_manager";
 
@@ -595,6 +596,7 @@ esp_err_t wifi_manager_join_sta(const char* ssid, const char* pass)
 
     if (bits & WIFI_CONNECTED_BIT) {
         ESP_LOGI(TAG, "connected to ap SSID:%s password:%s", ssid, pass);
+        play_local_voice(PATH_V_NET_OK, TEXT_V_NET_OK);
         nvs_handle_t my_handle;
         if (nvs_open("wifi_cfg", NVS_READWRITE, &my_handle) == ESP_OK) {
             nvs_set_str(my_handle, "ssid", ssid);
@@ -608,6 +610,7 @@ esp_err_t wifi_manager_join_sta(const char* ssid, const char* pass)
         return ESP_OK;
     } else if (bits & WIFI_FAIL_BIT) {
         ESP_LOGI(TAG, "Failed to connect to SSID:%s, password:%s", ssid, pass);
+        play_local_voice(PATH_V_NET_ERR, TEXT_V_NET_ERR);
         return ESP_FAIL;
     }
     return ESP_FAIL;
@@ -615,6 +618,8 @@ esp_err_t wifi_manager_join_sta(const char* ssid, const char* pass)
 
 static void wifi_autoconnect_task(void *pvParameters)
 {
+    play_local_voice(PATH_V_SYS_START, TEXT_V_SYS_START);
+
     char ssid[32] = {0};
     char password[64] = {0};
     size_t ssid_len = sizeof(ssid);
@@ -638,6 +643,7 @@ static void wifi_autoconnect_task(void *pvParameters)
         }
     } else {
         ESP_LOGI(TAG, "No saved WiFi config found. Entering AP provisioning mode.");
+        play_local_voice(PATH_V_NET_ERR, TEXT_V_NET_ERR);
         wifi_manager_start_ap();
     }
     vTaskDelete(NULL);

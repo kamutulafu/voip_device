@@ -13,6 +13,7 @@ extern "C" {
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"
 #include "esp_heap_caps.h"
+#include "esp_timer.h"
 }
 
 #include <stdlib.h>
@@ -52,6 +53,7 @@ static esp_err_t dl_event(esp_http_client_event_t *evt)
 
 static esp_err_t download_all(const char *url, uint8_t **out, size_t *out_len)
 {
+    int64_t start_time = esp_timer_get_time();
     dl_ctx_t d = {nullptr, 0, 0};
     esp_http_client_config_t cfg = {};
     cfg.url = url;
@@ -59,7 +61,6 @@ static esp_err_t download_all(const char *url, uint8_t **out, size_t *out_len)
     cfg.timeout_ms = 20000;
     cfg.event_handler = dl_event;
     cfg.user_data = &d;
-    cfg.transport_type = HTTP_TRANSPORT_OVER_SSL;
     cfg.crt_bundle_attach = esp_crt_bundle_attach;
     cfg.skip_cert_common_name_check = true;
 
@@ -72,14 +73,15 @@ static esp_err_t download_all(const char *url, uint8_t **out, size_t *out_len)
     int status = esp_http_client_get_status_code(client);
     esp_http_client_cleanup(client);
 
+    int64_t elapsed_ms = (esp_timer_get_time() - start_time) / 1000;
     if (err != ESP_OK || status != 200 || d.len == 0) {
-        ESP_LOGE(TAG, "download failed: err=%s status=%d len=%u",
-                 esp_err_to_name(err), status, (unsigned)d.len);
+        ESP_LOGE(TAG, "download failed after %lld ms: err=%s status=%d len=%u",
+                 elapsed_ms, esp_err_to_name(err), status, (unsigned)d.len);
         free(d.buf);
         return ESP_FAIL;
     }
 
-    ESP_LOGI(TAG, "downloaded %u bytes from %s", (unsigned)d.len, url);
+    ESP_LOGI(TAG, "downloaded %u bytes from %s (Took %lld ms)", (unsigned)d.len, url, elapsed_ms);
     *out = d.buf;
     *out_len = d.len;
     return ESP_OK;
@@ -93,11 +95,22 @@ extern "C" esp_err_t audio_play_mp3_url(const char *url)
         return ESP_ERR_INVALID_ARG;
     }
 
+    char *temp_url = strdup(url);
+    if (temp_url) {
+        if (strncmp(temp_url, "https://", 8) == 0) {
+            // Replace https:// with http:// to speed up downloading from COS by skipping SSL handshake
+            memmove(temp_url + 4, temp_url + 5, strlen(temp_url + 5) + 1);
+        }
+    }
+    const char *url_to_download = temp_url ? temp_url : url;
+
     uint8_t *mp3 = nullptr;
     size_t mp3_len = 0;
-    if (download_all(url, &mp3, &mp3_len) != ESP_OK) {
+    if (download_all(url_to_download, &mp3, &mp3_len) != ESP_OK) {
+        free(temp_url);
         return ESP_FAIL;
     }
+    free(temp_url);
 
     micro_mp3::Mp3Decoder decoder;
 

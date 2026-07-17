@@ -12,6 +12,7 @@
 
 #include "esp_log.h"
 #include "esp_http_client.h"
+#include "esp_timer.h"
 #include "cJSON.h"
 
 #include "voip_client.h"
@@ -217,15 +218,17 @@ wx_error_t voip_fetch_sn_ticket(const char *device_id, const char *sid,
     }
 
     wx_error_t result = WXERROR_OK;
+    int64_t start_time = esp_timer_get_time();
     esp_err_t err = esp_http_client_perform(client);
+    int64_t elapsed_ms = (esp_timer_get_time() - start_time) / 1000;
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "snTicket request failed: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "snTicket request failed after %lld ms: %s", elapsed_ms, esp_err_to_name(err));
         result = WXERROR_RESPONSE;
         goto done;
     }
 
     int status = esp_http_client_get_status_code(client);
-    ESP_LOGI(TAG, "snTicket HTTP status %d, %u bytes", status, (unsigned)resp.len);
+    ESP_LOGI(TAG, "snTicket HTTP status %d, %u bytes (Took %lld ms)", status, (unsigned)resp.len, elapsed_ms);
     if (status != 200 || resp.len == 0) {
         result = WXERROR_RESPONSE;
         goto done;

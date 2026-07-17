@@ -91,6 +91,7 @@ typedef struct {
     int msg_count;
 
     int retry_count;
+    bool timed_out;       /* True if dialogue timed out (user didn't speak) */
 } session_t;
 
 static session_t s_sess;
@@ -158,6 +159,21 @@ static bool listen_once(char *out, size_t sz)
         ESP_LOGE(TAG, "recording failed");
         return false;
     }
+
+    // Local VAD (Voice Activity Detection): compute average absolute amplitude to check for silence
+    int64_t sum = 0;
+    for (size_t i = 0; i < n; i++) {
+        sum += abs(pcm[i]);
+    }
+    int32_t avg_amp = sum / n;
+    ESP_LOGI(TAG, "Recorded audio average amplitude: %d", (int)avg_amp);
+
+    if (avg_amp < 80) {
+        ESP_LOGI(TAG, "Silence detected (amplitude < 80). Skipping cloud ASR request.");
+        free(pcm);
+        return false;
+    }
+
     esp_err_t err = asr_xfyun_recognize(pcm, n, out, sz);
     free(pcm);
     if (err != ESP_OK) {
@@ -181,6 +197,12 @@ static bool listen_with_retry(char *out, size_t sz)
         }
     }
     return false;
+}
+
+static void voice_flow_timeout_exit(session_t *s)
+{
+    dialogue_timeout_bye();
+    s->timed_out = true;
 }
 
 /* ---- parsing backend responses ---------------------------------------- */
@@ -496,7 +518,7 @@ static void handle_messages(session_t *s)
             dialogue_speak("是否回复或重听？请说我要回复、不用回复或者重播，说完请说over");
             char text[256];
             if (!listen_with_retry(text, sizeof(text))) {
-                dialogue_timeout_bye();
+                voice_flow_timeout_exit(s);
                 return;
             }
             switch (voice_intent_parse(text)) {
@@ -528,7 +550,7 @@ static void handle_send_msg(session_t *s)
 
         char text[256];
         if (!listen_with_retry(text, sizeof(text))) {
-            dialogue_timeout_bye();
+            voice_flow_timeout_exit(s);
             return;
         }
 
@@ -549,7 +571,7 @@ static void handle_send_msg(session_t *s)
             dialogue_confirm_info(mobile, true);
             char c2[128];
             if (!listen_with_retry(c2, sizeof(c2))) {
-                dialogue_timeout_bye();
+                voice_flow_timeout_exit(s);
                 return;
             }
             if (voice_intent_parse(c2) == INTENT_YES) {
@@ -713,7 +735,7 @@ static void handle_call(session_t *s, const char *heard)
                            relation_code_to_cn(first->relation));
         char t[128];
         if (!listen_with_retry(t, sizeof(t))) {
-            dialogue_timeout_bye();
+            voice_flow_timeout_exit(s);
             return;
         }
         if (voice_intent_parse(t) == INTENT_YES) {
@@ -736,7 +758,7 @@ static void handle_call(session_t *s, const char *heard)
                                relation_code_to_cn(target->relation));
             char t[128];
             if (!listen_with_retry(t, sizeof(t))) {
-                dialogue_timeout_bye();
+                voice_flow_timeout_exit(s);
                 return;
             }
             if (voice_intent_parse(t) == INTENT_YES) {
@@ -748,7 +770,7 @@ static void handle_call(session_t *s, const char *heard)
                                relation_code_to_cn(target->relation));
             char t[128];
             if (!listen_with_retry(t, sizeof(t))) {
-                dialogue_timeout_bye();
+                voice_flow_timeout_exit(s);
                 return;
             }
             char rel2[16];
@@ -774,7 +796,7 @@ static void handle_menu(session_t *s, bool restricted)
 {
     char text[256];
     if (!listen_with_retry(text, sizeof(text))) {
-        dialogue_timeout_bye();
+        voice_flow_timeout_exit(s);
         return;
     }
 
@@ -910,8 +932,10 @@ static void voice_task(void *arg)
         handle_menu(s, true);
     }
 
-    /* 1.5 farewell + close session. */
-    dialogue_farewell();
+    /* 1.5 farewell + close session. Only say farewell if we didn't already timeout. */
+    if (!s->timed_out) {
+        dialogue_farewell();
+    }
 
     keep_alive_stop();
     session_close(s);

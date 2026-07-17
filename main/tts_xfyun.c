@@ -11,6 +11,7 @@
 #include "freertos/semphr.h"
 
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "esp_websocket_client.h"
 #include "esp_crt_bundle.h"
 #include "esp_netif_sntp.h"
@@ -414,6 +415,7 @@ static void write_wav_header(FILE *f, uint32_t data_bytes)
 
 esp_err_t tts_xfyun_synthesize_to_file(const char *text, const char *filename)
 {
+    int64_t start_time = esp_timer_get_time();
     if (!text || text[0] == '\0' || !filename) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -515,15 +517,19 @@ cleanup:
     }
     free(url);
 
+    int64_t elapsed_ms = (esp_timer_get_time() - start_time) / 1000;
     if (err == ESP_OK) {
-        ESP_LOGI(TAG, "Synthesized %u bytes of audio to %s",
-                 (unsigned)ctx.audio_bytes, filename);
+        ESP_LOGI(TAG, "Synthesized %u bytes of audio to %s (Took %lld ms)",
+                 (unsigned)ctx.audio_bytes, filename, elapsed_ms);
+    } else {
+        ESP_LOGE(TAG, "TTS file synthesis failed after %lld ms", elapsed_ms);
     }
     return err;
 }
 
 esp_err_t tts_xfyun_synthesize_to_mem(const char *text, uint8_t **out_buf, size_t *out_len)
 {
+    int64_t start_time = esp_timer_get_time();
     if (!text || text[0] == '\0' || !out_buf || !out_len) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -642,8 +648,11 @@ cleanup:
     }
     free(url);
 
+    int64_t elapsed_ms = (esp_timer_get_time() - start_time) / 1000;
     if (err == ESP_OK) {
-        ESP_LOGI(TAG, "Synthesized %u bytes of audio to memory", (unsigned)ctx.audio_bytes);
+        ESP_LOGI(TAG, "Synthesized %u bytes of audio to memory (Took %lld ms)", (unsigned)ctx.audio_bytes, elapsed_ms);
+    } else {
+        ESP_LOGE(TAG, "TTS memory synthesis failed after %lld ms", elapsed_ms);
     }
     return err;
 }

@@ -11,6 +11,7 @@
 #include "freertos/semphr.h"
 
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "esp_websocket_client.h"
 #include "esp_crt_bundle.h"
 #include "esp_netif_sntp.h"
@@ -353,6 +354,7 @@ static esp_err_t ensure_time_synced(void)
 esp_err_t asr_xfyun_recognize(const int16_t *pcm, size_t num_samples,
                               char *out_text, size_t out_text_size)
 {
+    int64_t start_time = esp_timer_get_time();
     if (!pcm || num_samples == 0 || !out_text || out_text_size == 0) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -429,7 +431,8 @@ esp_err_t asr_xfyun_recognize(const int16_t *pcm, size_t num_samples,
         }
         first = false;
         offset += chunk;
-        vTaskDelay(pdMS_TO_TICKS(ASR_FRAME_INTERVAL_MS));
+        // Stream pre-recorded audio at high-speed (2ms delay) instead of real-time (40ms) to reduce latency
+        vTaskDelay(pdMS_TO_TICKS(2));
     }
 
     /* Make sure a final (status=2) frame is sent even if the loop ended on a
@@ -461,6 +464,13 @@ cleanup:
         vSemaphoreDelete(ctx.done);
     }
     free(url);
+
+    int64_t elapsed_ms = (esp_timer_get_time() - start_time) / 1000;
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "Speech recognition completed. Result: '%s' (Took %lld ms)", out_text, elapsed_ms);
+    } else {
+        ESP_LOGE(TAG, "Speech recognition failed after %lld ms", elapsed_ms);
+    }
     return err;
 }
 

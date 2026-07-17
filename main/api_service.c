@@ -6,6 +6,7 @@
 
 #include "esp_log.h"
 #include "esp_http_client.h"
+#include "esp_timer.h"
 #include "cJSON.h"
 #include "api_service.h"
 
@@ -70,6 +71,7 @@ static api_result_t* api_execute_internal(
     size_t file_buf_len,
     cJSON *multipart_fields
 ) {
+    int64_t start_time = esp_timer_get_time();
     char url[512];
     if (query_string && strlen(query_string) > 0) {
         snprintf(url, sizeof(url), "%s%s?%s", s_base_url, path, query_string);
@@ -255,6 +257,9 @@ static api_result_t* api_execute_internal(
             res->data = data_obj;
         }
     }
+    
+    int64_t elapsed_ms = (esp_timer_get_time() - start_time) / 1000;
+    ESP_LOGI(TAG, "API request to '%s' completed. HTTP status: %d (Took %lld ms)", path, res->http_status, elapsed_ms);
     
     return res;
 }

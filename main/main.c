@@ -20,6 +20,8 @@
 #include "voip_client.h"
 #include "api_test.h"
 
+#include "dialogue.h"
+
 int cmd_zmodem_send(int argc, char **argv);
 int cmd_zmodem_recv(int argc, char **argv);
 #endif
@@ -158,6 +160,15 @@ static void register_debug_console_commands(void)
 
     // Console equivalent of the physical wake button
     register_voice_wake_cmd();
+
+    // Register voice_update command
+    const esp_console_cmd_t cmd_voice_update_cfg = {
+        .command = "voice_update",
+        .help = "Update local voice files by synthesizing and saving them to SPIFFS",
+        .hint = NULL,
+        .func = &cmd_voice_update,
+    };
+    ESP_ERROR_CHECK(console_register_cmd(&cmd_voice_update_cfg));
 }
 #endif /* APP_BUILD_DEBUG */
 
