@@ -12,11 +12,15 @@ extern "C" {
 #define PATH_V_NET_OK      "/spiffs/v_net_ok.wav"
 #define PATH_V_NET_ERR     "/spiffs/v_net_err.wav"
 #define PATH_V_SYS_ERR     "/spiffs/v_sys_err.wav"
+#define PATH_V_FACE_FAIL   "/spiffs/v_face_fail.wav"
+#define PATH_V_NO_RESP     "/spiffs/v_no_resp.wav"
 
 #define TEXT_V_SYS_START   "系统启动成功，正在检查网络"
 #define TEXT_V_NET_OK      "网络连接成功"
 #define TEXT_V_NET_ERR     "网络连接失败"
 #define TEXT_V_SYS_ERR     "哎呀，系统开小差了"
+#define TEXT_V_FACE_FAIL   "未识别到人脸"
+#define TEXT_V_NO_RESP     "你好像不在这里，下次再找我吧，拜拜"
 
 /**
  * @brief Play a local WAV voice file from filesystem if it exists.

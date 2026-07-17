@@ -170,7 +170,7 @@ void dialogue_welcome_unknown(void)
 
 void dialogue_timeout_bye(void)
 {
-    dialogue_speak("您好像没有说话，我先溜了哦，有需要再找我，拜拜~");
+    play_local_voice(PATH_V_NO_RESP, TEXT_V_NO_RESP);
 }
 
 void dialogue_confirm_info(const char *content, bool with_beep)
@@ -214,11 +214,13 @@ int cmd_voice_update(int argc, char **argv)
         { TEXT_V_SYS_START, PATH_V_SYS_START, "1. 系统启动成功，正在检查网络" },
         { TEXT_V_NET_OK,    PATH_V_NET_OK,    "2. 网络连接成功" },
         { TEXT_V_NET_ERR,   PATH_V_NET_ERR,   "3. 网络连接失败" },
-        { TEXT_V_SYS_ERR,   PATH_V_SYS_ERR,   "4. 哎呀，系统开小差了" }
+        { TEXT_V_SYS_ERR,   PATH_V_SYS_ERR,   "4. 哎呀，系统开小差了" },
+        { TEXT_V_FACE_FAIL, PATH_V_FACE_FAIL, "5. 未识别到人脸" },
+        { TEXT_V_NO_RESP,   PATH_V_NO_RESP,   "6. 你好像不在这里，下次再找我吧，拜拜" }
     };
 
     int success_count = 0;
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < 6; i++) {
         printf("Synthesizing [%s] -> %s...\n", voices[i].desc, voices[i].path);
         // Remove old file first to ensure fresh synthesis
         unlink(voices[i].path);
@@ -231,6 +233,6 @@ int cmd_voice_update(int argc, char **argv)
         }
     }
 
-    printf("Local voice update completed. Success: %d/4\n", success_count);
-    return (success_count == 4) ? 0 : 1;
+    printf("Local voice update completed. Success: %d/6\n", success_count);
+    return (success_count == 6) ? 0 : 1;
 }

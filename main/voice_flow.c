@@ -928,6 +928,7 @@ static void voice_task(void *arg)
         }
     } else {
         /* 1.2 recognition failed -> restricted (public-service message only) */
+        play_local_voice(PATH_V_FACE_FAIL, TEXT_V_FACE_FAIL);
         dialogue_welcome_unknown();
         handle_menu(s, true);
     }
