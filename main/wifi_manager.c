@@ -595,8 +595,36 @@ esp_err_t wifi_manager_join_sta(const char* ssid, const char* pass)
             portMAX_DELAY);
 
     if (bits & WIFI_CONNECTED_BIT) {
-        ESP_LOGI(TAG, "connected to ap SSID:%s password:%s", ssid, pass);
-        play_local_voice(PATH_V_NET_OK, TEXT_V_NET_OK);
+        ESP_LOGI(TAG, "connected to ap SSID:%s password:%s. Waiting for internet connectivity...", ssid, pass);
+
+        // Wait for actual internet connectivity by resolving the backend host
+        struct addrinfo hints;
+        memset(&hints, 0, sizeof(hints));
+        hints.ai_family = AF_INET;
+        hints.ai_socktype = SOCK_STREAM;
+        struct addrinfo *res = NULL;
+        bool internet_ok = false;
+
+        for (int retry = 0; retry < 15; retry++) {
+            int err = getaddrinfo("gateway.tdskynet.com", NULL, &hints, &res);
+            if (err == 0) {
+                freeaddrinfo(res);
+                internet_ok = true;
+                break;
+            }
+            ESP_LOGI(TAG, "Internet not ready yet (getaddrinfo returned %d), retrying in 1s...", err);
+            vTaskDelay(pdMS_TO_TICKS(1000));
+        }
+
+        if (internet_ok) {
+            ESP_LOGI(TAG, "Internet connectivity verified successfully! Network is fully accessible.");
+            play_local_voice(PATH_V_NET_OK, TEXT_V_NET_OK);
+        } else {
+            ESP_LOGE(TAG, "Failed to verify internet connectivity (DNS resolution timed out).");
+            play_local_voice(PATH_V_NET_ERR, TEXT_V_NET_ERR);
+            return ESP_FAIL;
+        }
+
         nvs_handle_t my_handle;
         if (nvs_open("wifi_cfg", NVS_READWRITE, &my_handle) == ESP_OK) {
             nvs_set_str(my_handle, "ssid", ssid);

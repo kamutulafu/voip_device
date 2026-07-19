@@ -25,6 +25,16 @@ void audio_deinit(void);
 esp_err_t audio_record_to_file(const char *filename, uint32_t duration_sec);
 
 /**
+ * @brief Abort any active playback immediately.
+ */
+void audio_play_abort(void);
+
+/**
+ * @brief Clear the play abort flag.
+ */
+void audio_play_clear_abort(void);
+
+/**
  * @brief Play a WAV audio file from SPIFFS using the speaker
  * @param filename The path/name of the WAV file to play (e.g. "/spiffs/rec.wav")
  * @return ESP_OK on success

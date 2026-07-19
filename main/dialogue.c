@@ -11,6 +11,10 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/queue.h"
+#include "freertos/semphr.h"
 #include "esp_log.h"
 
 static const char *TAG = "dialogue";
@@ -19,24 +23,182 @@ static const char *TAG = "dialogue";
 #define TTS_PLAY_PATH   "/spiffs/tts_play.wav"
 #define BEEP_PATH       "/spiffs/beep.wav"
 
+/* ============================================================
+ * Serialized speech queue
+ *
+ * All spoken output (online TTS, local WAV files, the beep tone) is funneled
+ * through a single worker task so utterances play strictly one-at-a-time and
+ * never overlap on the shared I2S channel. Public speak/play functions enqueue
+ * an item and block until the worker has finished it.
+ *
+ * dialogue_abort_all() bumps a generation counter (so items already queued are
+ * discarded) and aborts any in-progress playback; used to cut the greeting
+ * short the moment a face is recognized.
+ * ============================================================ */
+
+typedef enum { SP_TTS, SP_FILE, SP_BEEP } sp_type_t;
+
+typedef struct {
+    sp_type_t type;
+    char text[512];              /* TTS text, or SP_FILE fallback text */
+    char path[160];              /* SP_FILE path */
+    SemaphoreHandle_t done;
+    esp_err_t result;
+    uint32_t generation;
+} speech_item_t;
+
+static QueueHandle_t     s_sp_queue = NULL;
+static TaskHandle_t      s_sp_worker = NULL;
+static volatile uint32_t s_sp_generation = 0;
+
+static esp_err_t ensure_beep_file(void); /* forward decl */
+
+/* Synthesize @p text and play it, unless an abort bumped the generation while
+ * synthesizing (in which case playback is skipped). */
+static esp_err_t worker_synth_and_play(const speech_item_t *it)
+{
+    (void)audio_set_volume(75);
+
+    uint8_t *wav_buf = NULL;
+    size_t wav_len = 0;
+    esp_err_t err = tts_xfyun_synthesize_to_mem(it->text, &wav_buf, &wav_len);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "TTS synthesis failed: %s. Trying local error voice.", esp_err_to_name(err));
+        struct stat st;
+        if (stat(PATH_V_SYS_ERR, &st) == 0 && S_ISREG(st.st_mode)) {
+            audio_play_clear_abort();
+            audio_play_from_file(PATH_V_SYS_ERR);
+        }
+        return err;
+    }
+
+    /* If we were aborted during the (blocking) synthesis, don't play. */
+    if (it->generation == s_sp_generation) {
+        audio_play_clear_abort();
+        err = audio_play_from_mem(wav_buf, wav_len);
+    } else {
+        ESP_LOGI(TAG, "utterance aborted during synth, skipping playback");
+        err = ESP_OK;
+    }
+    free(wav_buf);
+    return err;
+}
+
+static void speech_worker_task(void *arg)
+{
+    (void)arg;
+    speech_item_t *it = NULL;
+    for (;;) {
+        if (xQueueReceive(s_sp_queue, &it, portMAX_DELAY) != pdTRUE || !it) {
+            continue;
+        }
+
+        /* Discard items queued before the last abort. */
+        if (it->generation != s_sp_generation) {
+            it->result = ESP_OK;
+            if (it->done) xSemaphoreGive(it->done);
+            continue;
+        }
+
+        esp_err_t err = ESP_OK;
+        switch (it->type) {
+        case SP_TTS:
+            err = worker_synth_and_play(it);
+            break;
+        case SP_FILE: {
+            struct stat st;
+            if (stat(it->path, &st) == 0 && S_ISREG(st.st_mode)) {
+                ESP_LOGI(TAG, "Playing local voice: %s", it->path);
+                (void)audio_set_volume(75);
+                audio_play_clear_abort();
+                err = audio_play_from_file(it->path);
+            } else if (it->text[0] != '\0') {
+                ESP_LOGW(TAG, "Local voice %s missing, falling back to TTS", it->path);
+                err = worker_synth_and_play(it);
+            } else {
+                err = ESP_ERR_NOT_FOUND;
+            }
+            break;
+        }
+        case SP_BEEP:
+            if (ensure_beep_file() == ESP_OK) {
+                audio_play_clear_abort();
+                err = audio_play_from_file(BEEP_PATH);
+            } else {
+                ESP_LOGW(TAG, "beep tone unavailable");
+            }
+            break;
+        }
+
+        it->result = err;
+        if (it->done) xSemaphoreGive(it->done);
+    }
+}
+
+void dialogue_audio_init(void)
+{
+    if (s_sp_queue) {
+        return;
+    }
+    s_sp_queue = xQueueCreate(8, sizeof(speech_item_t *));
+    if (!s_sp_queue) {
+        ESP_LOGE(TAG, "failed to create speech queue");
+        return;
+    }
+    if (xTaskCreate(speech_worker_task, "speech_worker", 8192, NULL, 5, &s_sp_worker) != pdPASS) {
+        ESP_LOGE(TAG, "failed to create speech worker task");
+    }
+}
+
+void dialogue_abort_all(void)
+{
+    s_sp_generation++;      /* items already queued become stale */
+    audio_play_abort();     /* stop any in-progress playback     */
+}
+
+/* Enqueue one speech item and block until the worker has finished it. */
+static esp_err_t sp_enqueue_wait(sp_type_t type, const char *text, const char *path)
+{
+    if (!s_sp_queue) {
+        dialogue_audio_init();
+        if (!s_sp_queue) {
+            return ESP_ERR_INVALID_STATE;
+        }
+    }
+
+    speech_item_t *it = calloc(1, sizeof(*it));
+    if (!it) {
+        return ESP_ERR_NO_MEM;
+    }
+    it->type = type;
+    if (text) strlcpy(it->text, text, sizeof(it->text));
+    if (path) strlcpy(it->path, path, sizeof(it->path));
+    it->generation = s_sp_generation;
+    it->done = xSemaphoreCreateBinary();
+    if (!it->done) {
+        free(it);
+        return ESP_ERR_NO_MEM;
+    }
+
+    if (xQueueSend(s_sp_queue, &it, portMAX_DELAY) != pdTRUE) {
+        vSemaphoreDelete(it->done);
+        free(it);
+        return ESP_FAIL;
+    }
+
+    xSemaphoreTake(it->done, portMAX_DELAY);
+    esp_err_t r = it->result;
+    vSemaphoreDelete(it->done);
+    free(it);
+    return r;
+}
+
 esp_err_t play_local_voice(const char *path, const char *fallback_text)
 {
     if (!path) {
         return ESP_ERR_INVALID_ARG;
     }
-
-    struct stat st;
-    if (stat(path, &st) == 0 && S_ISREG(st.st_mode)) {
-        ESP_LOGI(TAG, "Playing local voice: %s", path);
-        (void)audio_set_volume(75);
-        return audio_play_from_file(path);
-    }
-
-    ESP_LOGW(TAG, "Local voice file %s not found, falling back to TTS: %s", path, fallback_text ? fallback_text : "");
-    if (fallback_text && fallback_text[0] != '\0') {
-        return dialogue_speak(fallback_text);
-    }
-    return ESP_ERR_NOT_FOUND;
+    return sp_enqueue_wait(SP_FILE, fallback_text, path);
 }
 
 esp_err_t dialogue_speak(const char *text)
@@ -44,33 +206,8 @@ esp_err_t dialogue_speak(const char *text)
     if (!text || text[0] == '\0') {
         return ESP_ERR_INVALID_ARG;
     }
-
-    ESP_LOGI(TAG, "TTS: %s", text);
-
-    /* Keep speaker at the safe default level for dialogue / call prompts. */
-    (void)audio_set_volume(75);
-
-    uint8_t *wav_buf = NULL;
-    size_t wav_len = 0;
-    esp_err_t err = tts_xfyun_synthesize_to_mem(text, &wav_buf, &wav_len);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "TTS synthesis failed: %s. Trying fallback local error voice.", esp_err_to_name(err));
-        // Fallback to local system error voice!
-        struct stat st;
-        if (stat(PATH_V_SYS_ERR, &st) == 0 && S_ISREG(st.st_mode)) {
-            audio_play_from_file(PATH_V_SYS_ERR);
-        } else {
-            ESP_LOGW(TAG, "Fallback voice file %s not found", PATH_V_SYS_ERR);
-        }
-        return err;
-    }
-
-    err = audio_play_from_mem(wav_buf, wav_len);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "TTS playback failed: %s", esp_err_to_name(err));
-    }
-    free(wav_buf);
-    return err;
+    ESP_LOGI(TAG, "TTS(queue): %s", text);
+    return sp_enqueue_wait(SP_TTS, text, NULL);
 }
 
 esp_err_t dialogue_speak_fmt(const char *fmt, ...)
@@ -140,11 +277,7 @@ static esp_err_t ensure_beep_file(void)
 
 void dialogue_beep(void)
 {
-    if (ensure_beep_file() == ESP_OK) {
-        audio_play_from_file(BEEP_PATH);
-    } else {
-        ESP_LOGW(TAG, "beep tone unavailable");
-    }
+    sp_enqueue_wait(SP_BEEP, NULL, NULL);
 }
 
 /* ============================================================

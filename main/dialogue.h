@@ -30,6 +30,18 @@ extern "C" {
  * @param fallback_text UTF-8 text to speak if file does not exist or fails to play.
  * @return ESP_OK on success.
  */
+/**
+ * @brief Initialize the serialized speech queue + worker task.
+ *        Must be called once at startup before any speak/play call.
+ */
+void dialogue_audio_init(void);
+
+/**
+ * @brief Abort all pending/in-progress speech: discards queued utterances and
+ *        stops current playback. Used to cut the greeting short on recognition.
+ */
+void dialogue_abort_all(void);
+
 esp_err_t play_local_voice(const char *path, const char *fallback_text);
 
 esp_err_t dialogue_speak(const char *text);

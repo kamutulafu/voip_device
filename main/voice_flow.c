@@ -160,20 +160,6 @@ static bool listen_once(char *out, size_t sz)
         return false;
     }
 
-    // Local VAD (Voice Activity Detection): compute average absolute amplitude to check for silence
-    int64_t sum = 0;
-    for (size_t i = 0; i < n; i++) {
-        sum += abs(pcm[i]);
-    }
-    int32_t avg_amp = sum / n;
-    ESP_LOGI(TAG, "Recorded audio average amplitude: %d", (int)avg_amp);
-
-    if (avg_amp < 80) {
-        ESP_LOGI(TAG, "Silence detected (amplitude < 80). Skipping cloud ASR request.");
-        free(pcm);
-        return false;
-    }
-
     esp_err_t err = asr_xfyun_recognize(pcm, n, out, sz);
     free(pcm);
     if (err != ESP_OK) {
@@ -274,6 +260,22 @@ static bool handle_face_result(api_result_t *res, session_t *s)
     /* Recognized when we have a session id and a name. */
     s->face_ok = (s->session_id[0] != '\0');
     return s->face_ok;
+}
+
+/* Decide whether a recognized face is a *stranger* (restricted, public-service
+ * menu) vs a registered child (full menu).
+ *
+ * IMPORTANT: on this backend isRegUser/isRegStranger are BOTH 0 even for a
+ * fully registered child (e.g. "洋洋" returns isRegUser=0 with a valid babyId
+ * and contacts). So isRegUser is NOT a reliable signal. A registered child is
+ * identified by having at least one contact returned; a genuine stranger is
+ * flagged isRegStranger==1 and/or has no contacts. */
+static bool session_is_stranger(const session_t *s)
+{
+    if (s->is_reg_stranger == 1) {
+        return true;
+    }
+    return (s->contact_count == 0);
 }
 
 /* Fetch unread leave messages into the session. Returns the count. */
@@ -867,20 +869,34 @@ static void keep_alive_stop(void)
 
 /* ---- main session task ------------------------------------------------- */
 
+static volatile bool s_greeting_playing = false;
+
+static void greeting_play_task(void *pvParameters)
+{
+    s_greeting_playing = true;
+    dialogue_greeting();
+    s_greeting_playing = false;
+    vTaskDelete(NULL);
+}
+
 static void voice_task(void *arg)
 {
     (void)arg;
     session_t *s = &s_sess;
     memset(s, 0, sizeof(*s));
 
-    /* 1.1 greeting + countdown, then face recognition. */
-    dialogue_greeting();
-
     /* Ensure the camera/UVC pipeline is up (idempotent). Without this the
      * capture below produces no file and searchFace2 fails with file-not-found. */
     if (!uvc_is_initialized()) {
         ESP_LOGI(TAG, "camera not initialized; running uvc_init...");
         cmd_uvc_init(0, NULL);
+    }
+
+    // Start playing greeting in the background
+    s_greeting_playing = true;
+    if (xTaskCreate(greeting_play_task, "greet_play", 4096, NULL, 5, NULL) != pdPASS) {
+        ESP_LOGE(TAG, "failed to create greeting play task");
+        s_greeting_playing = false;
     }
 
     size_t photo_len = 0;
@@ -890,47 +906,87 @@ static void voice_task(void *arg)
     }
     if (!photo_buf) {
         ESP_LOGE(TAG, "failed to allocate photo memory buffer");
+        dialogue_abort_all();
         dialogue_speak("内存分配失败，请稍后再试");
         s_session_active = false;
         vTaskDelete(NULL);
         return;
     }
 
-    esp_err_t cap = camera_capture_photo_mem(photo_buf, 128 * 1024, &photo_len);
-    if (cap != ESP_OK || photo_len == 0) {
-        ESP_LOGE(TAG, "photo capture failed or file empty; aborting session");
-        free(photo_buf);
-        dialogue_speak("摄像头好像出问题了呢，请稍后再试");
-        s_session_active = false;
-        vTaskDelete(NULL);
-        return;
+    bool recognized = false;
+    bool is_stranger = false;
+
+    // Phase 1: Continuous face recognition while greeting is playing
+    while (s_greeting_playing) {
+        photo_len = 0;
+        esp_err_t cap = camera_capture_photo_mem(photo_buf, 128 * 1024, &photo_len);
+        if (cap == ESP_OK && photo_len > 0) {
+            api_result_t *res = api_search_face_mem(DEVICE_ID, "", photo_buf, photo_len);
+            bool ok = handle_face_result(res, s);
+            if (res) api_result_free(res);
+
+            if (ok) {
+                // Immediately interrupt the greeting (discard queued + stop playback)
+                dialogue_abort_all();
+                recognized = true;
+                is_stranger = session_is_stranger(s);
+                break;
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(100));
     }
 
-    api_result_t *res = api_search_face_mem(DEVICE_ID, "", photo_buf, photo_len);
-    bool ok = handle_face_result(res, s);
-    if (res) api_result_free(res);
+    // Phase 2: Attempt face recognition 3 times if greeting finished without recognition
+    if (!recognized) {
+        int retries = 0;
+        while (retries < 3) {
+            ESP_LOGI(TAG, "Face recognition retry %d/3...", retries + 1);
+            // Play: "未识别到人脸"
+            play_local_voice(PATH_V_FACE_FAIL, TEXT_V_FACE_FAIL);
+
+            photo_len = 0;
+            esp_err_t cap = camera_capture_photo_mem(photo_buf, 128 * 1024, &photo_len);
+            if (cap == ESP_OK && photo_len > 0) {
+                api_result_t *res = api_search_face_mem(DEVICE_ID, "", photo_buf, photo_len);
+                bool ok = handle_face_result(res, s);
+                if (res) api_result_free(res);
+
+                if (ok) {
+                    recognized = true;
+                    is_stranger = session_is_stranger(s);
+                    break;
+                }
+            }
+            retries++;
+        }
+    }
+
     free(photo_buf);
 
-    /* Start heartbeat now that we (may) have a session. */
-    if (s->session_id[0]) {
-        keep_alive_start();
-    }
+    if (recognized) {
+        /* Start heartbeat now that we have a session. */
+        if (s->session_id[0]) {
+            keep_alive_start();
+        }
 
-    if (ok) {
-        int n = fetch_leave_msgs(s);
-        if (n <= 0) {
-            /* 1.2 success, no messages -> menu */
-            dialogue_welcome_menu(s->baby_name);
-            handle_menu(s, false);
+        if (!is_stranger) {
+            // Registered user: welcome menu and check unread messages
+            int n = fetch_leave_msgs(s);
+            if (n <= 0) {
+                dialogue_welcome_menu(s->baby_name);
+                handle_menu(s, false);
+            } else {
+                handle_messages(s);
+            }
         } else {
-            /* 2.1 / 2.2 message playback (announces its own greeting) */
-            handle_messages(s);
+            // Stranger: save stranger face info is done on server. Play stranger welcome and restricted menu.
+            dialogue_welcome_unknown();
+            handle_menu(s, true);
         }
     } else {
-        /* 1.2 recognition failed -> restricted (public-service message only) */
-        play_local_voice(PATH_V_FACE_FAIL, TEXT_V_FACE_FAIL);
-        dialogue_welcome_unknown();
-        handle_menu(s, true);
+        // Play: "你好像不在这里，下次再找我吧，拜拜"
+        play_local_voice(PATH_V_NO_RESP, TEXT_V_NO_RESP);
+        s->timed_out = true; // Flag timed out to skip dialogue_farewell
     }
 
     /* 1.5 farewell + close session. Only say farewell if we didn't already timeout. */
@@ -1054,6 +1110,9 @@ static esp_err_t wake_button_init(void)
 esp_err_t voice_flow_init(void)
 {
     api_service_init(BACKEND_BASE_URL);
+
+    /* Serialized speech queue + worker (all TTS/voice plays one-at-a-time). */
+    dialogue_audio_init();
 
     /* Auto-cleanup any leftover large dump files or temporary media to free SPIFFS space */
     unlink("/spiffs/dump.h264");

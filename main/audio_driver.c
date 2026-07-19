@@ -40,6 +40,17 @@ static i2s_chan_handle_t tx_handle = NULL;
 static i2s_chan_handle_t rx_handle = NULL;
 static bool s_audio_initialized = false;
 static uint8_t s_current_volume = AUDIO_DEFAULT_VOLUME;
+static volatile bool s_play_abort_flag = false;
+
+void audio_play_abort(void)
+{
+    s_play_abort_flag = true;
+}
+
+void audio_play_clear_abort(void)
+{
+    s_play_abort_flag = false;
+}
 
 #pragma pack(push, 1)
 typedef struct {
@@ -461,7 +472,7 @@ esp_err_t audio_record_mono_pcm(int16_t **out_buf, size_t *out_num_samples, uint
 
         size_t stereo_frames = bytes_read / (2 * sizeof(int16_t)); // L+R per frame
         for (size_t i = 0; i < stereo_frames && mono_written < mono_samples; i++) {
-            mono[mono_written++] = stereo[2 * i]; // keep left channel
+            mono[mono_written++] = stereo[2 * i + 1]; // keep right channel (microphone)
         }
     }
 
@@ -475,6 +486,8 @@ esp_err_t audio_record_mono_pcm(int16_t **out_buf, size_t *out_num_samples, uint
 
 esp_err_t audio_play_from_file(const char *filename)
 {
+    audio_play_clear_abort();
+
     if (!s_audio_initialized) {
         esp_err_t err = audio_init();
         if (err != ESP_OK) {
@@ -537,6 +550,10 @@ esp_err_t audio_play_from_file(const char *filename)
     ESP_LOGI(TAG, "Playback started...");
 
     while ((bytes_read = fread(read_buf, 1, read_buf_size, f)) > 0) {
+        if (s_play_abort_flag) {
+            ESP_LOGI(TAG, "Playback aborted by flag");
+            break;
+        }
         uint32_t bytes_to_write = bytes_read;
 
         if (header.num_channels == 1) {
@@ -660,6 +677,8 @@ esp_err_t audio_record_to_mem(uint8_t **out_buf, size_t *out_len, uint32_t durat
 
 esp_err_t audio_play_from_mem(const uint8_t *buf, size_t len)
 {
+    audio_play_clear_abort();
+
     if (buf == NULL || len < sizeof(wav_header_t)) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -683,15 +702,11 @@ esp_err_t audio_play_from_mem(const uint8_t *buf, size_t len)
              (int)header.sample_rate, (int)header.num_channels, (int)header.bits_per_sample);
 
     const uint8_t *data_ptr = buf + sizeof(wav_header_t);
-    uint32_t data_len = len - sizeof(wav_header_t);
-    if (data_len > header.subchunk2_size) {
-        data_len = header.subchunk2_size;
-    }
+    size_t data_len = len - sizeof(wav_header_t);
 
-    // Allocate play buffers
     const uint32_t write_chunk_size = 2048;
-    uint8_t *play_buf = NULL;
     uint8_t *mono_to_stereo_buf = NULL;
+    uint8_t *play_buf = NULL;
 
     if (header.num_channels == 1) {
         mono_to_stereo_buf = malloc(write_chunk_size * 2);
@@ -706,6 +721,10 @@ esp_err_t audio_play_from_mem(const uint8_t *buf, size_t len)
     ESP_LOGI(TAG, "Playback from memory started...");
 
     while (offset < data_len) {
+        if (s_play_abort_flag) {
+            ESP_LOGI(TAG, "Playback aborted by flag");
+            break;
+        }
         uint32_t chunk = data_len - offset;
         if (chunk > write_chunk_size) {
             chunk = write_chunk_size;
