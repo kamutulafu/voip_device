@@ -96,6 +96,8 @@ typedef struct {
 
 static session_t s_sess;
 static volatile bool s_session_active = false;
+static volatile bool s_voip_call_connected = false;
+static TaskHandle_t s_voice_task_handle = NULL;
 
 /* Wake button (GPIO45): ISR posts to queue, task debounces and calls wake. */
 static QueueHandle_t s_wake_btn_queue = NULL;
@@ -365,17 +367,22 @@ static call_result_t place_voip_call(const char *openid)
         int st = voip_get_call_status(VOIP_PAYLOAD);
         ESP_LOGI(TAG, "call status = %d", st);
         if (st == 2) {
+            s_voip_call_connected = true;
             answered = true;
         } else if (answered && (st == 5 || st == 6)) {
+            s_voip_call_connected = false;
             return CALL_ANSWERED_ENDED;
         } else if (st == 3 || st == 8 || st == 9) {
+            s_voip_call_connected = false;
             return CALL_NO_ANSWER;
         } else if (st == 7) {
+            s_voip_call_connected = false;
             return CALL_POWEROFF;
         }
         vTaskDelay(pdMS_TO_TICKS(CALL_POLL_INTERVAL_MS));
         elapsed += CALL_POLL_INTERVAL_MS;
     }
+    s_voip_call_connected = false;
     return answered ? CALL_ANSWERED_ENDED : CALL_NO_ANSWER;
 }
 
@@ -998,6 +1005,8 @@ static void voice_task(void *arg)
     session_close(s);
 
     s_session_active = false;
+    s_voip_call_connected = false;
+    s_voice_task_handle = NULL;
     ESP_LOGI(TAG, "voice session ended");
     vTaskDelete(NULL);
 }
@@ -1132,15 +1141,46 @@ esp_err_t voice_flow_init(void)
 void voice_flow_wake(void)
 {
     if (s_session_active) {
-        ESP_LOGW(TAG, "wake ignored: a session is already running");
+        bool in_call = s_voip_call_connected;
+        ESP_LOGI(TAG, "Wake button pressed during active session (in_call=%d), interrupting...", in_call);
+
+        /* Hang up any VoIP call in progress */
+        voip_send_hangup(VOIP_PAYLOAD);
+
+        /* Abort any playing or queued speech/audio */
+        dialogue_abort_all();
+        s_greeting_playing = false;
+
+        /* Terminate active voice task if handle is present */
+        if (s_voice_task_handle != NULL) {
+            TaskHandle_t t = s_voice_task_handle;
+            s_voice_task_handle = NULL;
+            vTaskDelete(t);
+        }
+
+        keep_alive_stop();
+        session_close(&s_sess);
+
+        s_session_active = false;
+        s_voip_call_connected = false;
+
+        /* Play corresponding voice prompt */
+        if (in_call) {
+            play_local_voice(PATH_V_CALL_END, TEXT_V_CALL_END);
+        } else {
+            play_local_voice(PATH_V_GOODBYE, TEXT_V_GOODBYE);
+        }
         return;
     }
+
     s_session_active = true;
+    s_voip_call_connected = false;
 
     /* Large stack: TTS/ASR/JSON/VoIP all run within this task. */
-    if (xTaskCreate(voice_task, "voice_flow", 12288, NULL, 5, NULL) != pdPASS) {
+    if (xTaskCreate(voice_task, "voice_flow", 12288, NULL, 5, &s_voice_task_handle) != pdPASS) {
         ESP_LOGE(TAG, "failed to create voice task");
         s_session_active = false;
+        s_voice_task_handle = NULL;
     }
 }
 
@@ -1148,11 +1188,10 @@ int cmd_voice_wake(int argc, char **argv)
 {
     (void)argc; (void)argv;
     if (s_session_active) {
-        printf("A voice session is already running.\n");
-        return 1;
+        printf("Wake button pressed during active session -> interrupting flow...\n");
+    } else {
+        printf("Wake triggered (console). Starting voice interaction session...\n");
     }
-    printf("Wake triggered (console). Starting voice interaction session...\n");
-    printf("(Physical button on GPIO%d works the same way.)\n", WAKE_BUTTON_GPIO);
     voice_flow_wake();
     return 0;
 }

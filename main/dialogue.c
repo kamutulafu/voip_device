@@ -339,6 +339,15 @@ int cmd_voice_update(int argc, char **argv)
 
     printf("Starting local voice updates...\n");
 
+    /* Free up space by removing temporary media/dump files */
+    unlink("/spiffs/dump.h264");
+    unlink("/spiffs/face.jpg");
+    unlink("/spiffs/photo.jpg");
+    unlink("/spiffs/reply.wav");
+    unlink("/spiffs/tts.wav");
+    unlink("/spiffs/tts_play.wav");
+    unlink("/spiffs/rec.wav");
+
     const struct {
         const char *text;
         const char *path;
@@ -350,7 +359,9 @@ int cmd_voice_update(int argc, char **argv)
         { TEXT_V_SYS_ERR,   PATH_V_SYS_ERR,   "4. 哎呀，系统开小差了" },
         { TEXT_V_FACE_FAIL, PATH_V_FACE_FAIL, "5. 未识别到人脸" },
         { TEXT_V_NO_RESP,   PATH_V_NO_RESP,   "6. 你好像不在这里，下次再找我吧，拜拜" },
-        { TEXT_V_GREETING,  PATH_V_GREETING,  "7. 问候与倒计时" }
+        { TEXT_V_GREETING,  PATH_V_GREETING,  "7. 问候与倒计时" },
+        { TEXT_V_GOODBYE,   PATH_V_GOODBYE,   "8. 好的，有需要再找我，拜拜" },
+        { TEXT_V_CALL_END,  PATH_V_CALL_END,  "9. 通话已结束" }
     };
 
     const int total_voices = sizeof(voices) / sizeof(voices[0]);
