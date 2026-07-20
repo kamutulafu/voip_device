@@ -35,8 +35,11 @@ static const char *TAG = "tts_xfyun";
 #define TTS_SAMPLE_RATE         16000
 #define TTS_RESULT_TIMEOUT_MS   20000
 
-/* Voice name (发音人). "xiaoyan" is the default free Mandarin voice. */
-#define TTS_VOICE_NAME          "xiaoyan"
+/* Voice name (发音人) and parameters. "x4_xiaofang" (讯飞芳芳). */
+#define TTS_VOICE_NAME          "x4_xiaofang"
+#define TTS_SPEED               45
+#define TTS_VOLUME              50
+#define TTS_PITCH               50
 
 #pragma pack(push, 1)
 typedef struct {
@@ -343,9 +346,9 @@ static esp_err_t send_tts_request(esp_websocket_client_handle_t client, const ch
     int n = snprintf(json, json_cap,
         "{\"common\":{\"app_id\":\"%s\"},"
         "\"business\":{\"aue\":\"raw\",\"auf\":\"audio/L16;rate=16000\","
-        "\"vcn\":\"%s\",\"tte\":\"UTF8\",\"speed\":50,\"volume\":%d,\"pitch\":50},"
+        "\"vcn\":\"%s\",\"tte\":\"UTF8\",\"speed\":%d,\"volume\":%d,\"pitch\":%d},"
         "\"data\":{\"status\":2,\"text\":\"%s\"}}",
-        XF_APPID, TTS_VOICE_NAME, AUDIO_DEFAULT_VOLUME, text_b64);
+        XF_APPID, TTS_VOICE_NAME, TTS_SPEED, TTS_VOLUME, TTS_PITCH, text_b64);
 
     esp_err_t ret = ESP_OK;
     if (n > 0 && n < (int)json_cap) {
