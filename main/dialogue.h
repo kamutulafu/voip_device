@@ -14,6 +14,7 @@ extern "C" {
 #define PATH_V_SYS_ERR     "/spiffs/v_sys_err.wav"
 #define PATH_V_FACE_FAIL   "/spiffs/v_face_fail.wav"
 #define PATH_V_NO_RESP     "/spiffs/v_no_resp.wav"
+#define PATH_V_GREETING    "/spiffs/v_greeting.wav"
 
 #define TEXT_V_SYS_START   "系统启动成功，正在检查网络"
 #define TEXT_V_NET_OK      "网络连接成功"
@@ -21,6 +22,7 @@ extern "C" {
 #define TEXT_V_SYS_ERR     "哎呀，系统开小差了"
 #define TEXT_V_FACE_FAIL   "未识别到人脸"
 #define TEXT_V_NO_RESP     "你好像不在这里，下次再找我吧，拜拜"
+#define TEXT_V_GREETING    "小朋友您好，请正对摄像头站好，现在我要看看你是谁。3！2！1！"
 
 /**
  * @brief Play a local WAV voice file from filesystem if it exists.

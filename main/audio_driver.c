@@ -28,9 +28,6 @@ static const char *TAG = "audio_driver";
 #define AUDIO_SAMPLE_RATE       16000
 #define AUDIO_MCLK_MULTIPLE     384
 
-/* Default speaker volume (0-100). 75% balances loudness vs clipping on the PA. */
-#define AUDIO_DEFAULT_VOLUME    75
-
 /* ES8311 DAC volume register (0x32): 0 = mute, 0xFF = max (~0 dB scale). */
 #define ES8311_REG_DAC_VOLUME   0x32
 #define ES8311_REG_DAC_MUTE     0x31

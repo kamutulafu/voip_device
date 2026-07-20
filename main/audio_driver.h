@@ -5,6 +5,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* Default speaker volume (0-100). 75% balances loudness vs clipping on the PA. */
+#define AUDIO_DEFAULT_VOLUME    55
+
 /**
  * @brief Initialize the audio system (I2C, ES8311 Codec, and I2S)
  * @return ESP_OK on success, appropriate error code otherwise

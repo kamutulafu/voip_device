@@ -700,7 +700,7 @@ void voip_media_on_call_connected(const char *payload)
 {
     /* Ensure codec is up, PA enabled, and speaker at a safe loud level for the call. */
     if (audio_init() == ESP_OK) {
-        audio_set_volume(75);
+        audio_set_volume(AUDIO_DEFAULT_VOLUME);
     }
 
     if (!payload) {

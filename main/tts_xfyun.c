@@ -343,9 +343,9 @@ static esp_err_t send_tts_request(esp_websocket_client_handle_t client, const ch
     int n = snprintf(json, json_cap,
         "{\"common\":{\"app_id\":\"%s\"},"
         "\"business\":{\"aue\":\"raw\",\"auf\":\"audio/L16;rate=16000\","
-        "\"vcn\":\"%s\",\"tte\":\"UTF8\",\"speed\":50,\"volume\":75,\"pitch\":50},"
+        "\"vcn\":\"%s\",\"tte\":\"UTF8\",\"speed\":50,\"volume\":%d,\"pitch\":50},"
         "\"data\":{\"status\":2,\"text\":\"%s\"}}",
-        XF_APPID, TTS_VOICE_NAME, text_b64);
+        XF_APPID, TTS_VOICE_NAME, AUDIO_DEFAULT_VOLUME, text_b64);
 
     esp_err_t ret = ESP_OK;
     if (n > 0 && n < (int)json_cap) {

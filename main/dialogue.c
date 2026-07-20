@@ -57,7 +57,7 @@ static esp_err_t ensure_beep_file(void); /* forward decl */
  * synthesizing (in which case playback is skipped). */
 static esp_err_t worker_synth_and_play(const speech_item_t *it)
 {
-    (void)audio_set_volume(75);
+    (void)audio_set_volume(AUDIO_DEFAULT_VOLUME);
 
     uint8_t *wav_buf = NULL;
     size_t wav_len = 0;
@@ -109,7 +109,7 @@ static void speech_worker_task(void *arg)
             struct stat st;
             if (stat(it->path, &st) == 0 && S_ISREG(st.st_mode)) {
                 ESP_LOGI(TAG, "Playing local voice: %s", it->path);
-                (void)audio_set_volume(75);
+                (void)audio_set_volume(AUDIO_DEFAULT_VOLUME);
                 audio_play_clear_abort();
                 err = audio_play_from_file(it->path);
             } else if (it->text[0] != '\0') {
@@ -286,7 +286,7 @@ void dialogue_beep(void)
 
 void dialogue_greeting(void)
 {
-    dialogue_speak("小朋友您好，请正对摄像头站好，现在我要看看你是谁。3！2！1！");
+    play_local_voice(PATH_V_GREETING, TEXT_V_GREETING);
 }
 
 void dialogue_welcome_menu(const char *name)
@@ -349,11 +349,13 @@ int cmd_voice_update(int argc, char **argv)
         { TEXT_V_NET_ERR,   PATH_V_NET_ERR,   "3. 网络连接失败" },
         { TEXT_V_SYS_ERR,   PATH_V_SYS_ERR,   "4. 哎呀，系统开小差了" },
         { TEXT_V_FACE_FAIL, PATH_V_FACE_FAIL, "5. 未识别到人脸" },
-        { TEXT_V_NO_RESP,   PATH_V_NO_RESP,   "6. 你好像不在这里，下次再找我吧，拜拜" }
+        { TEXT_V_NO_RESP,   PATH_V_NO_RESP,   "6. 你好像不在这里，下次再找我吧，拜拜" },
+        { TEXT_V_GREETING,  PATH_V_GREETING,  "7. 问候与倒计时" }
     };
 
+    const int total_voices = sizeof(voices) / sizeof(voices[0]);
     int success_count = 0;
-    for (int i = 0; i < 6; i++) {
+    for (int i = 0; i < total_voices; i++) {
         printf("Synthesizing [%s] -> %s...\n", voices[i].desc, voices[i].path);
         // Remove old file first to ensure fresh synthesis
         unlink(voices[i].path);
@@ -366,6 +368,6 @@ int cmd_voice_update(int argc, char **argv)
         }
     }
 
-    printf("Local voice update completed. Success: %d/6\n", success_count);
-    return (success_count == 6) ? 0 : 1;
+    printf("Local voice update completed. Success: %d/%d\n", success_count, total_voices);
+    return (success_count == total_voices) ? 0 : 1;
 }
