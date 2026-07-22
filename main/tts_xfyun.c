@@ -33,7 +33,7 @@ static const char *TAG = "tts_xfyun";
 
 /* Synthesized audio format: 16 kHz / 16-bit / mono raw PCM */
 #define TTS_SAMPLE_RATE         16000
-#define TTS_RESULT_TIMEOUT_MS   20000
+#define TTS_RESULT_TIMEOUT_MS   60000
 
 /* Voice name (发音人) and parameters. "x4_xiaofang" (讯飞芳芳). */
 #define TTS_VOICE_NAME          "x4_xiaofang"
@@ -253,24 +253,12 @@ static void parse_result_json(tts_ctx_t *ctx, const char *json, size_t len)
                             ctx->audio_bytes += pcm_len;
                         }
                     } else if (ctx->streaming) {
-                        /* Play this chunk immediately instead of buffering the
-                         * whole utterance first. audio_play_pcm_begin() is
-                         * deferred to the first chunk so we don't reconfigure
-                         * the I2S clock before we actually know synthesis is
-                         * going to produce audio. */
-                        if (!ctx->pcm_started) {
-                            audio_play_pcm_begin(TTS_SAMPLE_RATE);
-                            ctx->pcm_started = true;
-                        }
+                        cJSON *status_obj = cJSON_GetObjectItem(data, "status");
+                        bool is_last_chunk = (cJSON_IsNumber(status_obj) && status_obj->valueint == 2);
                         if (audio_play_is_aborted()) {
-                            /* Someone called audio_play_abort() (e.g. a face
-                             * was recognized and cut the current utterance
-                             * short). Stop feeding audio; the outer function
-                             * will tear the connection down once it observes
-                             * ctx->aborted. */
                             ctx->aborted = true;
                         } else {
-                            audio_play_pcm_write((const int16_t *)pcm, pcm_len / 2, 1);
+                            audio_queue_push((const int16_t *)pcm, pcm_len / 2, is_last_chunk);
                         }
                         ctx->audio_bytes += pcm_len;
                     }
@@ -707,6 +695,8 @@ esp_err_t tts_xfyun_synthesize_stream(const char *text)
     }
     ESP_LOGI(TAG, "Connecting to TTS service (streaming playback)...");
 
+    audio_queue_start(TTS_SAMPLE_RATE);
+
     tts_ctx_t ctx = {0};
     ctx.streaming = true;
     ctx.connected = xSemaphoreCreateBinary();
@@ -750,9 +740,7 @@ esp_err_t tts_xfyun_synthesize_stream(const char *text)
         goto cleanup_client;
     }
 
-    /* Wait for all audio frames (status=2), an error, or a mid-stream abort.
-     * Playback of each chunk already happened as it arrived, inside
-     * parse_result_json() via the WebSocket event callback. */
+    /* Wait for all audio frames (status=2), an error, or a mid-stream abort. */
     if (xSemaphoreTake(ctx.done, pdMS_TO_TICKS(TTS_RESULT_TIMEOUT_MS)) != pdTRUE) {
         ESP_LOGW(TAG, "Timed out waiting for synthesis result");
         err = ESP_ERR_TIMEOUT;
@@ -769,14 +757,14 @@ esp_err_t tts_xfyun_synthesize_stream(const char *text)
         err = ESP_OK;
     }
 
+    /* Signal completion to Audio_Queue and wait for Playback Consumer thread to finish playing smooth audio */
+    audio_queue_finish();
+    audio_queue_wait_done(60000);
+
 cleanup_client:
     esp_websocket_client_stop(client);
     esp_websocket_client_destroy(client);
 cleanup:
-    if (ctx.pcm_started) {
-        audio_play_pcm_end();
-    }
-
     free(ctx.acc);
     if (ctx.connected) {
         vSemaphoreDelete(ctx.connected);
@@ -838,10 +826,11 @@ int cmd_tts_test(int argc, char **argv)
 
 int cmd_tts_test_stream(int argc, char **argv)
 {
-    char text[512] = {0};
+    char text[1024] = {0};
 
     if (argc < 2) {
-        snprintf(text, sizeof(text), "你好，这是TTS功能测试");
+        snprintf(text, sizeof(text),
+                 "小朋友你好！我是智能儿童求助与安全守护终端。当你在生活中遇到困难或紧急情况时，可以通过我随时向爸爸妈妈或求助中心发起语音通话和留言。请始终保持勇敢与冷静，我会时刻守护在你的身边，为你提供及时、安全、温暖的帮助与保障。现在正在为您进行长文本流式语音合成播放压力测试，用于验证高吞吐网络数据下的解耦缓冲区与抖动平滑播放能力，请仔细听取声音是否清晰连贯没有任何暂停卡顿。");
     } else {
         size_t pos = 0;
         for (int i = 1; i < argc; i++) {

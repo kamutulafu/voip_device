@@ -447,7 +447,7 @@ static void record_upload_save(session_t *s, const char *receiver_id,
                                const char *relation_code, const char *direction,
                                const char *reply_id)
 {
-    dialogue_speak("好嘞！请说出您的留言，说完说over");
+    dialogue_speak("好的！请说出您的留言，说完说over");
 
     const uint32_t rec_sec = 8;
     uint8_t *audio_buf = NULL;
@@ -764,7 +764,7 @@ static void handle_call(session_t *s, const char *heard)
     }
 
     while (target) {
-        dialogue_speak_fmt("好嘞！正在拨打%s的电话，请稍等！", relation_code_to_cn(target->relation));
+        dialogue_speak_fmt("好的！正在拨打%s的电话，请稍等！", relation_code_to_cn(target->relation));
 
         call_result_t r = place_voip_call(target->wx_openid);
         save_call_log(s, target, r);

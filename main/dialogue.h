@@ -24,7 +24,7 @@ extern "C" {
 #define TEXT_V_SYS_ERR     "哎呀，系统开小差了"
 #define TEXT_V_FACE_FAIL   "未识别到人脸"
 #define TEXT_V_NO_RESP     "你好像不在这里，下次再找我吧，拜拜"
-#define TEXT_V_GREETING    "小朋友您好，请正对摄像头站好，现在我要看看你是谁。3！2！1！"
+#define TEXT_V_GREETING    "小朋友您好，请正对摄像头站好，现在我要看看你是谁。三！二！一！"
 #define TEXT_V_GOODBYE     "好的，有需要再找我，拜拜"
 #define TEXT_V_CALL_END    "通话已结束"
 

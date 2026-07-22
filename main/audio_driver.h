@@ -57,6 +57,34 @@ void audio_play_clear_abort(void);
 bool audio_play_is_aborted(void);
 
 /**
+ * @brief Start the decoupled Audio Queue and Playback Consumer task for streaming TTS.
+ * @param sample_rate Sample rate (e.g. 16000 Hz)
+ * @return ESP_OK on success
+ */
+esp_err_t audio_queue_start(uint32_t sample_rate);
+
+/**
+ * @brief Push a PCM chunk into the Audio Queue (producer callback).
+ * @param pcm Pointer to int16 PCM samples
+ * @param num_samples Number of samples
+ * @param is_last Set to true if this is the final chunk
+ * @return ESP_OK on success
+ */
+esp_err_t audio_queue_push(const int16_t *pcm, size_t num_samples, bool is_last);
+
+/**
+ * @brief Signal completion of TTS stream (pushes final end chunk).
+ */
+void audio_queue_finish(void);
+
+/**
+ * @brief Wait for the Playback Consumer to finish playing all queued audio chunks.
+ * @param timeout_ms Max time to wait in milliseconds
+ * @return ESP_OK if finished cleanly, ESP_ERR_TIMEOUT if timed out
+ */
+esp_err_t audio_queue_wait_done(uint32_t timeout_ms);
+
+/**
  * @brief Play a WAV audio file from SPIFFS using the speaker
  * @param filename The path/name of the WAV file to play (e.g. "/spiffs/rec.wav")
  * @return ESP_OK on success

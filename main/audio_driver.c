@@ -865,6 +865,156 @@ void audio_play_pcm_end(void)
     ESP_LOGI(TAG, "PCM playback end, clock restored to %d Hz", AUDIO_SAMPLE_RATE);
 }
 
+typedef struct {
+    int16_t *data;
+    size_t num_samples;
+    bool is_last;
+} audio_queue_item_t;
+
+static QueueHandle_t s_audio_queue = NULL;
+static SemaphoreHandle_t s_audio_queue_done_sem = NULL;
+static TaskHandle_t s_audio_consumer_task_handle = NULL;
+
+static void audio_queue_consumer_task(void *arg)
+{
+    uint32_t sample_rate = (uint32_t)(uintptr_t)arg;
+    bool pcm_started = false;
+    bool finished = false;
+
+    /* Pre-buffering: wait until queue has 2-3 chunks OR a chunk with is_last == true */
+    TickType_t pre_start = xTaskGetTickCount();
+    while ((xTaskGetTickCount() - pre_start) < pdMS_TO_TICKS(1000)) {
+        if (audio_play_is_aborted()) {
+            break;
+        }
+        UBaseType_t count = s_audio_queue ? uxQueueMessagesWaiting(s_audio_queue) : 0;
+        if (count >= 2) {
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+
+    while (!finished) {
+        if (audio_play_is_aborted()) {
+            ESP_LOGI(TAG, "Audio Queue consumer aborted by play_abort flag");
+            break;
+        }
+
+        audio_queue_item_t item;
+        /* Wait up to 3000ms for next chunk (Jitter buffer timeout per Requirement 1.5/1.11) */
+        if (s_audio_queue && xQueueReceive(s_audio_queue, &item, pdMS_TO_TICKS(3000)) == pdTRUE) {
+            if (item.data && item.num_samples > 0) {
+                if (!pcm_started) {
+                    audio_play_pcm_begin(sample_rate);
+                    pcm_started = true;
+                }
+                if (!audio_play_is_aborted()) {
+                    audio_play_pcm_write(item.data, item.num_samples, 1);
+                }
+                free(item.data);
+            }
+            if (item.is_last) {
+                finished = true;
+            }
+        } else {
+            ESP_LOGW(TAG, "Audio Queue consumer timed out waiting for audio chunk");
+            break;
+        }
+    }
+
+    /* Drain any remaining queue items if aborted */
+    if (s_audio_queue) {
+        audio_queue_item_t item;
+        while (xQueueReceive(s_audio_queue, &item, 0) == pdTRUE) {
+            if (item.data) free(item.data);
+        }
+    }
+
+    if (pcm_started) {
+        audio_play_pcm_end();
+    }
+
+    if (s_audio_queue_done_sem) {
+        xSemaphoreGive(s_audio_queue_done_sem);
+    }
+    s_audio_consumer_task_handle = NULL;
+    vTaskDelete(NULL);
+}
+
+esp_err_t audio_queue_start(uint32_t sample_rate)
+{
+    audio_play_clear_abort();
+
+    if (s_audio_queue) {
+        vQueueDelete(s_audio_queue);
+        s_audio_queue = NULL;
+    }
+    if (s_audio_queue_done_sem) {
+        vSemaphoreDelete(s_audio_queue_done_sem);
+        s_audio_queue_done_sem = NULL;
+    }
+
+    s_audio_queue = xQueueCreate(32, sizeof(audio_queue_item_t)); // Max 32 chunks per Requirement 1.12
+    s_audio_queue_done_sem = xSemaphoreCreateBinary();
+
+    if (!s_audio_queue || !s_audio_queue_done_sem) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    BaseType_t ret = xTaskCreate(audio_queue_consumer_task, "audio_consumer", 4096,
+                                 (void *)(uintptr_t)sample_rate, 5, &s_audio_consumer_task_handle);
+    if (ret != pdPASS) {
+        return ESP_FAIL;
+    }
+    return ESP_OK;
+}
+
+esp_err_t audio_queue_push(const int16_t *pcm, size_t num_samples, bool is_last)
+{
+    if (!s_audio_queue) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (audio_play_is_aborted()) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    audio_queue_item_t item = {0};
+    item.is_last = is_last;
+    if (pcm && num_samples > 0) {
+        item.num_samples = num_samples;
+        item.data = malloc(num_samples * sizeof(int16_t));
+        if (!item.data) {
+            return ESP_ERR_NO_MEM;
+        }
+        memcpy(item.data, pcm, num_samples * sizeof(int16_t));
+    }
+
+    /* Requirement 1.12: WHILE Audio_Queue holds 32 chunks, block further enqueue up to 3000ms */
+    if (xQueueSend(s_audio_queue, &item, pdMS_TO_TICKS(3000)) != pdTRUE) {
+        if (item.data) free(item.data);
+        return ESP_ERR_TIMEOUT;
+    }
+    return ESP_OK;
+}
+
+void audio_queue_finish(void)
+{
+    if (s_audio_queue && !audio_play_is_aborted()) {
+        audio_queue_push(NULL, 0, true);
+    }
+}
+
+esp_err_t audio_queue_wait_done(uint32_t timeout_ms)
+{
+    if (!s_audio_queue_done_sem) {
+        return ESP_OK;
+    }
+    if (xSemaphoreTake(s_audio_queue_done_sem, pdMS_TO_TICKS(timeout_ms)) == pdTRUE) {
+        return ESP_OK;
+    }
+    return ESP_ERR_TIMEOUT;
+}
+
 int cmd_audio_record(int argc, char **argv)
 {
     if (argc < 2) {
