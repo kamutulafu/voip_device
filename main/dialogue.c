@@ -53,34 +53,30 @@ static volatile uint32_t s_sp_generation = 0;
 
 static esp_err_t ensure_beep_file(void); /* forward decl */
 
-/* Synthesize @p text and play it, unless an abort bumped the generation while
- * synthesizing (in which case playback is skipped). */
+/* Synthesize @p text and play it, streaming each audio chunk to the speaker
+ * as it arrives instead of waiting for the whole utterance to finish
+ * synthesizing first. If an abort bumped the generation before we even
+ * started, skip entirely; if it happens mid-stream, tts_xfyun_synthesize_stream()
+ * itself notices (via audio_play_is_aborted()) and stops early. */
 static esp_err_t worker_synth_and_play(const speech_item_t *it)
 {
     (void)audio_set_volume(AUDIO_DEFAULT_VOLUME);
 
-    uint8_t *wav_buf = NULL;
-    size_t wav_len = 0;
-    esp_err_t err = tts_xfyun_synthesize_to_mem(it->text, &wav_buf, &wav_len);
+    if (it->generation != s_sp_generation) {
+        ESP_LOGI(TAG, "utterance aborted before synth, skipping");
+        return ESP_OK;
+    }
+
+    audio_play_clear_abort();
+    esp_err_t err = tts_xfyun_synthesize_stream(it->text);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "TTS synthesis failed: %s. Trying local error voice.", esp_err_to_name(err));
+        ESP_LOGE(TAG, "TTS streaming synthesis failed: %s. Trying local error voice.", esp_err_to_name(err));
         struct stat st;
         if (stat(PATH_V_SYS_ERR, &st) == 0 && S_ISREG(st.st_mode)) {
             audio_play_clear_abort();
             audio_play_from_file(PATH_V_SYS_ERR);
         }
-        return err;
     }
-
-    /* If we were aborted during the (blocking) synthesis, don't play. */
-    if (it->generation == s_sp_generation) {
-        audio_play_clear_abort();
-        err = audio_play_from_mem(wav_buf, wav_len);
-    } else {
-        ESP_LOGI(TAG, "utterance aborted during synth, skipping playback");
-        err = ESP_OK;
-    }
-    free(wav_buf);
     return err;
 }
 

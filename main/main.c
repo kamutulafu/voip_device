@@ -138,6 +138,15 @@ static void register_debug_console_commands(void)
     };
     ESP_ERROR_CHECK(console_register_cmd(&cmd_tts_test_cfg));
 
+    // Register text-to-speech (TTS) streaming playback test command
+    const esp_console_cmd_t cmd_tts_test_stream_cfg = {
+        .command = "tts_test_stream",
+        .help = "Stream TTS playback test (plays as audio arrives). Defaults to '你好，这是TTS功能测试'",
+        .hint = "[text...]",
+        .func = &cmd_tts_test_stream,
+    };
+    ESP_ERROR_CHECK(console_register_cmd(&cmd_tts_test_stream_cfg));
+
     // Register WeChat Cloud VoIP test call command
     const esp_console_cmd_t cmd_voip_call_cfg = {
         .command = "voip_call",

@@ -77,7 +77,14 @@ typedef struct {
     uint8_t *mem_buf;
     size_t mem_len;
     size_t mem_cap;
-    
+
+    /* Streaming playback mode: feed each decoded PCM chunk straight to the
+     * speaker via audio_play_pcm_write() as it arrives, instead of
+     * buffering the whole utterance first. */
+    bool streaming;
+    bool pcm_started;   /* audio_play_pcm_begin() already called */
+    bool aborted;        /* audio_play_abort() fired mid-stream (not an error) */
+
     size_t audio_bytes;
 } tts_ctx_t;
 
@@ -245,6 +252,27 @@ static void parse_result_json(tts_ctx_t *ctx, const char *json, size_t len)
                             memcpy(ctx->mem_buf + sizeof(wav_header_t) + ctx->audio_bytes, pcm, pcm_len);
                             ctx->audio_bytes += pcm_len;
                         }
+                    } else if (ctx->streaming) {
+                        /* Play this chunk immediately instead of buffering the
+                         * whole utterance first. audio_play_pcm_begin() is
+                         * deferred to the first chunk so we don't reconfigure
+                         * the I2S clock before we actually know synthesis is
+                         * going to produce audio. */
+                        if (!ctx->pcm_started) {
+                            audio_play_pcm_begin(TTS_SAMPLE_RATE);
+                            ctx->pcm_started = true;
+                        }
+                        if (audio_play_is_aborted()) {
+                            /* Someone called audio_play_abort() (e.g. a face
+                             * was recognized and cut the current utterance
+                             * short). Stop feeding audio; the outer function
+                             * will tear the connection down once it observes
+                             * ctx->aborted. */
+                            ctx->aborted = true;
+                        } else {
+                            audio_play_pcm_write((const int16_t *)pcm, pcm_len / 2, 1);
+                        }
+                        ctx->audio_bytes += pcm_len;
                     }
                 } else {
                     ESP_LOGW(TAG, "Failed to base64-decode audio chunk");
@@ -254,7 +282,7 @@ static void parse_result_json(tts_ctx_t *ctx, const char *json, size_t len)
         }
 
         cJSON *status = cJSON_GetObjectItem(data, "status");
-        if (ctx->error || (cJSON_IsNumber(status) && status->valueint == 2)) {
+        if (ctx->error || ctx->aborted || (cJSON_IsNumber(status) && status->valueint == 2)) {
             cJSON_Delete(root);
             xSemaphoreGive(ctx->done);
             return;
@@ -660,6 +688,114 @@ cleanup:
     return err;
 }
 
+esp_err_t tts_xfyun_synthesize_stream(const char *text)
+{
+    int64_t start_time = esp_timer_get_time();
+    if (!text || text[0] == '\0') {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    esp_err_t err = ensure_time_synced();
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    char *url = build_auth_url();
+    if (!url) {
+        ESP_LOGE(TAG, "Failed to build auth URL");
+        return ESP_FAIL;
+    }
+    ESP_LOGI(TAG, "Connecting to TTS service (streaming playback)...");
+
+    tts_ctx_t ctx = {0};
+    ctx.streaming = true;
+    ctx.connected = xSemaphoreCreateBinary();
+    ctx.done = xSemaphoreCreateBinary();
+    if (!ctx.connected || !ctx.done) {
+        err = ESP_ERR_NO_MEM;
+        goto cleanup;
+    }
+
+    esp_websocket_client_config_t cfg = {
+        .uri = url,
+        .buffer_size = 8192,
+        .task_stack = 8192,
+        .network_timeout_ms = 10000,
+        .reconnect_timeout_ms = 10000,
+        .disable_auto_reconnect = true,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+    };
+
+    esp_websocket_client_handle_t client = esp_websocket_client_init(&cfg);
+    if (!client) {
+        err = ESP_FAIL;
+        goto cleanup;
+    }
+    esp_websocket_register_events(client, WEBSOCKET_EVENT_ANY, ws_event_handler, &ctx);
+
+    err = esp_websocket_client_start(client);
+    if (err != ESP_OK) {
+        goto cleanup_client;
+    }
+
+    if (xSemaphoreTake(ctx.connected, pdMS_TO_TICKS(10000)) != pdTRUE) {
+        ESP_LOGE(TAG, "Timed out waiting for connection");
+        err = ESP_ERR_TIMEOUT;
+        goto cleanup_client;
+    }
+
+    err = send_tts_request(client, text);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to send TTS request");
+        goto cleanup_client;
+    }
+
+    /* Wait for all audio frames (status=2), an error, or a mid-stream abort.
+     * Playback of each chunk already happened as it arrived, inside
+     * parse_result_json() via the WebSocket event callback. */
+    if (xSemaphoreTake(ctx.done, pdMS_TO_TICKS(TTS_RESULT_TIMEOUT_MS)) != pdTRUE) {
+        ESP_LOGW(TAG, "Timed out waiting for synthesis result");
+        err = ESP_ERR_TIMEOUT;
+    } else if (ctx.aborted) {
+        ESP_LOGI(TAG, "TTS streaming playback aborted mid-utterance");
+        err = ESP_OK; /* not a failure, just cut short on purpose */
+    } else if (ctx.error) {
+        ESP_LOGE(TAG, "%s", ctx.err_msg);
+        err = ESP_FAIL;
+    } else if (ctx.audio_bytes == 0) {
+        ESP_LOGE(TAG, "No audio received from TTS service");
+        err = ESP_FAIL;
+    } else {
+        err = ESP_OK;
+    }
+
+cleanup_client:
+    esp_websocket_client_stop(client);
+    esp_websocket_client_destroy(client);
+cleanup:
+    if (ctx.pcm_started) {
+        audio_play_pcm_end();
+    }
+
+    free(ctx.acc);
+    if (ctx.connected) {
+        vSemaphoreDelete(ctx.connected);
+    }
+    if (ctx.done) {
+        vSemaphoreDelete(ctx.done);
+    }
+    free(url);
+
+    int64_t elapsed_ms = (esp_timer_get_time() - start_time) / 1000;
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "Streamed %u bytes of audio to speaker (Took %lld ms)",
+                 (unsigned)ctx.audio_bytes, elapsed_ms);
+    } else {
+        ESP_LOGE(TAG, "TTS streaming synthesis failed after %lld ms", elapsed_ms);
+    }
+    return err;
+}
+
 int cmd_tts_test(int argc, char **argv)
 {
     if (argc < 2) {
@@ -693,6 +829,36 @@ int cmd_tts_test(int argc, char **argv)
     err = audio_play_from_file(filepath);
     if (err != ESP_OK) {
         printf("Playback failed: %s\n", esp_err_to_name(err));
+        return 1;
+    }
+
+    printf("Done.\n");
+    return 0;
+}
+
+int cmd_tts_test_stream(int argc, char **argv)
+{
+    char text[512] = {0};
+
+    if (argc < 2) {
+        snprintf(text, sizeof(text), "你好，这是TTS功能测试");
+    } else {
+        size_t pos = 0;
+        for (int i = 1; i < argc; i++) {
+            int n = snprintf(text + pos, sizeof(text) - pos,
+                             (i == 1) ? "%s" : " %s", argv[i]);
+            if (n < 0 || (size_t)n >= sizeof(text) - pos) {
+                break;
+            }
+            pos += n;
+        }
+    }
+
+    printf("Streaming speech via iFlytek: \"%s\"\n", text);
+    audio_play_clear_abort();
+    esp_err_t err = tts_xfyun_synthesize_stream(text);
+    if (err != ESP_OK) {
+        printf("Streaming text-to-speech failed: %s\n", esp_err_to_name(err));
         return 1;
     }
 

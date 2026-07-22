@@ -49,6 +49,11 @@ void audio_play_clear_abort(void)
     s_play_abort_flag = false;
 }
 
+bool audio_play_is_aborted(void)
+{
+    return s_play_abort_flag;
+}
+
 #pragma pack(push, 1)
 typedef struct {
     char chunk_id[4];          // "RIFF"

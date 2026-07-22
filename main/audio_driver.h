@@ -4,6 +4,7 @@
 #include "esp_err.h"
 #include <stddef.h>
 #include <stdint.h>
+#include <stdbool.h>
 
 /* Default speaker volume (0-100). 75% balances loudness vs clipping on the PA. */
 #define AUDIO_DEFAULT_VOLUME    55
@@ -36,6 +37,18 @@ void audio_play_abort(void);
  * @brief Clear the play abort flag.
  */
 void audio_play_clear_abort(void);
+
+/**
+ * @brief Check whether the play abort flag is currently set, without
+ *        modifying it. Intended for callers that stream audio chunk-by-chunk
+ *        (e.g. TTS playback fed live from a network callback) and need to
+ *        stop feeding new chunks as soon as audio_play_abort() is called by
+ *        another task, the same way the built-in audio_play_from_file() /
+ *        audio_play_from_mem() loops already do internally.
+ *
+ * @return true if audio_play_abort() was called and not yet cleared.
+ */
+bool audio_play_is_aborted(void);
 
 /**
  * @brief Play a WAV audio file from SPIFFS using the speaker
