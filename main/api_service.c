@@ -550,10 +550,115 @@ api_result_t* api_post_calls_photo_mem(const char *session_id, const char *devic
     return api_execute_internal(HTTP_METHOD_POST, "/wechat-service/api/device/postCallsPhoto", query, NULL, NULL, NULL, NULL, NULL, NULL, file_buf, file_buf_len, NULL);
 }
 
+static const int ima_index_table[16] = {
+    -1, -1, -1, -1, 2, 4, 6, 8,
+    -1, -1, -1, -1, 2, 4, 6, 8
+};
+
+static const int ima_step_table[89] = {
+    7, 8, 9, 10, 11, 12, 13, 14, 16, 17,
+    19, 21, 23, 25, 28, 31, 34, 37, 41, 45,
+    50, 55, 60, 66, 73, 80, 88, 97, 107, 118,
+    130, 143, 157, 173, 190, 209, 230, 253, 279, 307,
+    337, 371, 408, 449, 494, 544, 598, 658, 724, 796,
+    876, 963, 1060, 1166, 1282, 1411, 1552, 1707, 1878, 2066,
+    2272, 2499, 2749, 3024, 3326, 3658, 4024, 4426, 4869, 5356,
+    5892, 6481, 7129, 7842, 8626, 9489, 10438, 11482, 12630, 13893,
+    15282, 16810, 18491, 20340, 22374, 24612, 27074, 29781, 32767
+};
+
+static size_t ima_adpcm_encode(const int16_t *pcm, size_t num_samples, uint8_t *out_adpcm)
+{
+    if (!pcm || num_samples == 0 || !out_adpcm) return 0;
+    int valprev = 0;
+    int index = 0;
+    size_t out_bytes = 0;
+    bool buffer_step = true;
+    uint8_t out_byte = 0;
+
+    for (size_t i = 0; i < num_samples; i++) {
+        int sample = pcm[i];
+        int diff = sample - valprev;
+        int sign = (diff < 0) ? 8 : 0;
+        if (sign) diff = -diff;
+
+        int step = ima_step_table[index];
+        int delta = 0;
+        int vpdiff = step >> 3;
+
+        if (diff >= step) {
+            delta |= 4;
+            diff -= step;
+            vpdiff += step;
+        }
+        step >>= 1;
+        if (diff >= step) {
+            delta |= 2;
+            diff -= step;
+            vpdiff += step >> 1;
+        }
+        step >>= 1;
+        if (diff >= step) {
+            delta |= 1;
+            vpdiff += step >> 2;
+        }
+
+        if (sign) valprev -= vpdiff;
+        else valprev += vpdiff;
+
+        if (valprev > 32767) valprev = 32767;
+        else if (valprev < -32768) valprev = -32768;
+
+        delta |= sign;
+        index += ima_index_table[delta];
+        if (index < 0) index = 0;
+        if (index > 88) index = 88;
+
+        if (buffer_step) {
+            out_byte = (delta & 0x0F);
+        } else {
+            out_adpcm[out_bytes++] = out_byte | ((delta & 0x0F) << 4);
+        }
+        buffer_step = !buffer_step;
+    }
+    if (!buffer_step) {
+        out_adpcm[out_bytes++] = out_byte;
+    }
+    return out_bytes;
+}
+
 api_result_t* api_post_calls_audio_mem(const char *session_id, const char *device_id, const uint8_t *file_buf, size_t file_buf_len) {
     char query[256] = {0};
-    snprintf(query, sizeof(query), "sessionId=%s&deviceId=%s", session_id?session_id:"", device_id?device_id:"");
-    return api_execute_internal(HTTP_METHOD_POST, "/wechat-service/api/device/postCallsAudio", query, NULL, NULL, NULL, NULL, NULL, NULL, file_buf, file_buf_len, NULL);
+    const uint8_t *payload = file_buf;
+    size_t payload_len = file_buf_len;
+    uint8_t *compressed_buf = NULL;
+
+    if (file_buf && file_buf_len >= 1024) {
+        size_t num_samples = file_buf_len / sizeof(int16_t);
+        size_t max_adpcm_len = num_samples / 2 + 16;
+        compressed_buf = malloc(max_adpcm_len);
+        if (compressed_buf) {
+            size_t adpcm_len = ima_adpcm_encode((const int16_t *)file_buf, num_samples, compressed_buf);
+            if (adpcm_len > 0) {
+                ESP_LOGI(TAG, "Compressed audio payload before upload: %u -> %u bytes (ADPCM 4-bit, %.1f%% of raw size)",
+                         (unsigned)file_buf_len, (unsigned)adpcm_len, (adpcm_len * 100.0) / file_buf_len);
+                payload = compressed_buf;
+                payload_len = adpcm_len;
+                snprintf(query, sizeof(query), "sessionId=%s&deviceId=%s&format=adpcm", session_id?session_id:"", device_id?device_id:"");
+            }
+        }
+    }
+
+    if (query[0] == '\0') {
+        snprintf(query, sizeof(query), "sessionId=%s&deviceId=%s", session_id?session_id:"", device_id?device_id:"");
+    }
+
+    api_result_t *res = api_execute_internal(HTTP_METHOD_POST, "/wechat-service/api/device/postCallsAudio", query, NULL, NULL, NULL, NULL, NULL, NULL, payload, payload_len, NULL);
+
+    if (compressed_buf) {
+        free(compressed_buf);
+    }
+    return res;
 }
 
 api_result_t* api_get_baby_info_by_face_img_mem(const char *device_id, const char *sid, const uint8_t *file_buf, size_t file_buf_len) {

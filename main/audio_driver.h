@@ -29,6 +29,12 @@ void audio_deinit(void);
 esp_err_t audio_record_to_file(const char *filename, uint32_t duration_sec);
 
 /**
+ * @brief Flush and discard initial microphone/codec warm-up noise/samples from I2S RX channel.
+ * @param warmup_ms Duration in milliseconds to flush (e.g. 50 ms).
+ */
+void audio_flush_rx_warmup(uint32_t warmup_ms);
+
+/**
  * @brief Abort any active playback immediately.
  */
 void audio_play_abort(void);

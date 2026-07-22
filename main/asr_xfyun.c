@@ -474,6 +474,187 @@ cleanup:
     return err;
 }
 
+esp_err_t asr_xfyun_record_and_recognize_stream(uint32_t duration_sec,
+                                                char *out_text, size_t out_text_size,
+                                                int16_t **out_pcm_copy, size_t *out_num_samples)
+{
+    int64_t start_time = esp_timer_get_time();
+    if (!out_text || out_text_size == 0 || duration_sec == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    out_text[0] = '\0';
+
+    esp_err_t err = ensure_time_synced();
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    err = audio_init();
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    char *url = build_auth_url();
+    if (!url) {
+        ESP_LOGE(TAG, "Failed to build auth URL");
+        return ESP_FAIL;
+    }
+    ESP_LOGI(TAG, "Connecting to IAT service for streaming ASR (%u sec)...", (unsigned)duration_sec);
+
+    asr_ctx_t ctx = {0};
+    ctx.text = out_text;
+    ctx.text_size = out_text_size;
+    ctx.connected = xSemaphoreCreateBinary();
+    ctx.done = xSemaphoreCreateBinary();
+    if (!ctx.connected || !ctx.done) {
+        err = ESP_ERR_NO_MEM;
+        goto cleanup;
+    }
+
+    esp_websocket_client_config_t cfg = {
+        .uri = url,
+        .buffer_size = 4096,
+        .task_stack = 8192,
+        .network_timeout_ms = 10000,
+        .reconnect_timeout_ms = 10000,
+        .disable_auto_reconnect = true,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+    };
+
+    esp_websocket_client_handle_t client = esp_websocket_client_init(&cfg);
+    if (!client) {
+        err = ESP_FAIL;
+        goto cleanup;
+    }
+    esp_websocket_register_events(client, WEBSOCKET_EVENT_ANY, ws_event_handler, &ctx);
+
+    err = esp_websocket_client_start(client);
+    if (err != ESP_OK) {
+        goto cleanup_client;
+    }
+
+    if (xSemaphoreTake(ctx.connected, pdMS_TO_TICKS(10000)) != pdTRUE) {
+        ESP_LOGE(TAG, "Timed out waiting for IAT connection");
+        err = ESP_ERR_TIMEOUT;
+        goto cleanup_client;
+    }
+
+    /* Perform 50ms I2S RX flush to discard initial codec warm-up noise */
+    audio_flush_rx_warmup(50);
+
+    /* Allocate buffer to accumulate mono PCM samples if caller requested a copy */
+    const size_t total_mono_samples = (size_t)16000 * duration_sec;
+    int16_t *pcm_buf = NULL;
+    if (out_pcm_copy) {
+        pcm_buf = heap_caps_malloc(total_mono_samples * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!pcm_buf) {
+            pcm_buf = malloc(total_mono_samples * sizeof(int16_t));
+        }
+    }
+
+    const size_t chunk_mono_samples = 640; /* 40 ms at 16 kHz = 640 mono samples = 1280 bytes */
+    const size_t stereo_buf_bytes = chunk_mono_samples * 2 * sizeof(int16_t); /* 2560 bytes for stereo */
+    int16_t *stereo_buf = malloc(stereo_buf_bytes);
+    int16_t *mono_chunk = malloc(chunk_mono_samples * sizeof(int16_t));
+
+    if (!stereo_buf || !mono_chunk) {
+        ESP_LOGE(TAG, "Failed to allocate audio streaming buffers");
+        free(stereo_buf);
+        free(mono_chunk);
+        if (pcm_buf) free(pcm_buf);
+        err = ESP_ERR_NO_MEM;
+        goto cleanup_client;
+    }
+
+    size_t total_samples_written = 0;
+    bool first_frame = true;
+
+    ESP_LOGI(TAG, "Streaming audio to IAT in real time (%u seconds)...", (unsigned)duration_sec);
+
+    while (total_samples_written < total_mono_samples) {
+        size_t samples_to_read = total_mono_samples - total_samples_written;
+        if (samples_to_read > chunk_mono_samples) {
+            samples_to_read = chunk_mono_samples;
+        }
+        size_t req_bytes = samples_to_read * 2 * sizeof(int16_t);
+        size_t bytes_read = 0;
+
+        err = audio_read_raw(stereo_buf, req_bytes, &bytes_read, 1000);
+        if (err != ESP_OK || bytes_read == 0) {
+            ESP_LOGW(TAG, "I2S raw read timeout or error during streaming ASR");
+            break;
+        }
+
+        size_t stereo_frames = bytes_read / (2 * sizeof(int16_t));
+        for (size_t i = 0; i < stereo_frames; i++) {
+            int16_t s = stereo_buf[2 * i + 1]; /* right channel microphone */
+            mono_chunk[i] = s;
+            if (pcm_buf && (total_samples_written + i) < total_mono_samples) {
+                pcm_buf[total_samples_written + i] = s;
+            }
+        }
+
+        size_t mono_chunk_bytes = stereo_frames * sizeof(int16_t);
+        bool last_frame = (total_samples_written + stereo_frames >= total_mono_samples);
+        int status = first_frame ? 0 : (last_frame ? 2 : 1);
+
+        err = send_audio_frame(client, status, (const uint8_t *)mono_chunk, mono_chunk_bytes);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to send streaming audio frame");
+            break;
+        }
+        first_frame = false;
+        total_samples_written += stereo_frames;
+    }
+
+    free(stereo_buf);
+    free(mono_chunk);
+
+    /* Send final status=2 frame if not already sent */
+    if (!first_frame) {
+        send_audio_frame(client, 2, NULL, 0);
+    }
+
+    /* Wait for final recognition text */
+    if (xSemaphoreTake(ctx.done, pdMS_TO_TICKS(ASR_RESULT_TIMEOUT_MS)) != pdTRUE) {
+        ESP_LOGW(TAG, "Timed out waiting for streaming ASR result");
+        err = ESP_ERR_TIMEOUT;
+    } else if (ctx.error) {
+        ESP_LOGE(TAG, "%s", ctx.err_msg);
+        err = ESP_FAIL;
+    } else {
+        err = ESP_OK;
+    }
+
+    if (err == ESP_OK && out_pcm_copy && out_num_samples) {
+        *out_pcm_copy = pcm_buf;
+        *out_num_samples = total_samples_written;
+    } else if (pcm_buf) {
+        free(pcm_buf);
+    }
+
+cleanup_client:
+    esp_websocket_client_stop(client);
+    esp_websocket_client_destroy(client);
+cleanup:
+    free(ctx.acc);
+    if (ctx.connected) {
+        vSemaphoreDelete(ctx.connected);
+    }
+    if (ctx.done) {
+        vSemaphoreDelete(ctx.done);
+    }
+    free(url);
+
+    int64_t elapsed_ms = (esp_timer_get_time() - start_time) / 1000;
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "Streaming speech recognition completed. Result: '%s' (Took %lld ms)", out_text, elapsed_ms);
+    } else {
+        ESP_LOGE(TAG, "Streaming speech recognition failed after %lld ms", elapsed_ms);
+    }
+    return err;
+}
+
 int cmd_asr_test(int argc, char **argv)
 {
     uint32_t duration = 5; // default 5 seconds

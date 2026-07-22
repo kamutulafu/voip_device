@@ -169,17 +169,9 @@ static int json_int(cJSON *obj, const char *key, int dflt)
 static bool listen_once(char *out, size_t sz)
 {
     out[0] = '\0';
-    int16_t *pcm = NULL;
-    size_t n = 0;
-    if (audio_record_mono_pcm(&pcm, &n, LISTEN_RECORD_SEC) != ESP_OK) {
-        ESP_LOGE(TAG, "recording failed");
-        return false;
-    }
-
-    esp_err_t err = asr_xfyun_recognize(pcm, n, out, sz);
-    free(pcm);
+    esp_err_t err = asr_xfyun_record_and_recognize_stream(LISTEN_RECORD_SEC, out, sz, NULL, NULL);
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "ASR failed: %s", esp_err_to_name(err));
+        ESP_LOGW(TAG, "Streaming ASR failed: %s", esp_err_to_name(err));
         return false;
     }
     ESP_LOGI(TAG, "heard: '%s'", out);

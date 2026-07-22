@@ -427,6 +427,22 @@ esp_err_t audio_read_raw(void *dest, size_t size, size_t *bytes_read, uint32_t t
     return i2s_channel_read(rx_handle, dest, size, bytes_read, pdMS_TO_TICKS(timeout_ms));
 }
 
+void audio_flush_rx_warmup(uint32_t warmup_ms)
+{
+    if (!s_audio_initialized || rx_handle == NULL) {
+        return;
+    }
+    char dummy[1024];
+    size_t bytes_read = 0;
+    TickType_t start = xTaskGetTickCount();
+    TickType_t max_ticks = pdMS_TO_TICKS(warmup_ms > 0 ? warmup_ms : 50);
+    while ((xTaskGetTickCount() - start) < max_ticks) {
+        if (i2s_channel_read(rx_handle, dummy, sizeof(dummy), &bytes_read, pdMS_TO_TICKS(10)) != ESP_OK || bytes_read == 0) {
+            break;
+        }
+    }
+}
+
 esp_err_t audio_record_mono_pcm(int16_t **out_buf, size_t *out_num_samples, uint32_t duration_sec)
 {
     if (out_buf == NULL || out_num_samples == NULL || duration_sec == 0) {
@@ -462,6 +478,7 @@ esp_err_t audio_record_mono_pcm(int16_t **out_buf, size_t *out_num_samples, uint
     }
 
     ESP_LOGI(TAG, "Recording mono PCM for %u second(s)...", (unsigned)duration_sec);
+    audio_flush_rx_warmup(50); // Flush initial 50ms warm-up noise
 
     size_t mono_written = 0;
     while (mono_written < mono_samples) {
