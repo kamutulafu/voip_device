@@ -292,6 +292,7 @@ api_result_t* api_get_device_config(const char *device_id, int vn) {
     cJSON_AddStringToObject(req, "id", device_id ? device_id : "");
     cJSON_AddNumberToObject(req, "vn", vn);
     char *json_body = cJSON_PrintUnformatted(req);
+    ESP_LOGI(TAG, "api_get_device_config request data: %s", json_body ? json_body : "");
     api_result_t *res = api_execute(HTTP_METHOD_POST, "/wechat-service/api/device/getDeviceConfig", NULL, NULL, NULL, NULL, json_body, NULL, NULL, NULL);
     cJSON_Delete(req);
     free(json_body);

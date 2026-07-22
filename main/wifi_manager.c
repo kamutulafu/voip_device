@@ -21,6 +21,10 @@
 #include "lwip/netdb.h"
 #include "wifi_manager.h"
 #include "dialogue.h"
+#include "time_sync.h"
+#include "api_service.h"
+#include "device_config.h"
+#include "voice_flow.h"
 
 static const char *TAG = "wifi_manager";
 
@@ -567,6 +571,26 @@ void wifi_manager_start_ap(void)
     }
 }
 
+static void fetch_device_config_task(void *arg)
+{
+    /* 稍作等待 (例如 500ms)，让 time_sync_start 优先完成校时，避免时间未校准时 TLS 握手异常 */
+    vTaskDelay(pdMS_TO_TICKS(500));
+    ESP_LOGI(TAG, "Fetching device config automatically after internet connection...");
+    api_result_t *res = api_get_device_config(DEVICE_ID, 1);
+    if (res) {
+        if (res->http_status == 200) {
+            ESP_LOGI(TAG, "Device config fetched successfully! Updated useType = %d (%s)",
+                     get_device_use_type(), get_device_use_type() == 1 ? "校内版" : "校外版");
+        } else {
+            ESP_LOGW(TAG, "Device config fetch returned HTTP status %d", res->http_status);
+        }
+        api_result_free(res);
+    } else {
+        ESP_LOGE(TAG, "Failed to fetch device config");
+    }
+    vTaskDelete(NULL);
+}
+
 esp_err_t wifi_manager_join_sta(const char* ssid, const char* pass)
 {
     wifi_manager_init_common();
@@ -618,6 +642,8 @@ esp_err_t wifi_manager_join_sta(const char* ssid, const char* pass)
 
         if (internet_ok) {
             ESP_LOGI(TAG, "Internet connectivity verified successfully! Network is fully accessible.");
+            time_sync_start(); // 联网确认可用后，异步"蹭"一次HTTP Date响应头校准系统时间
+            xTaskCreate(fetch_device_config_task, "fetch_dev_cfg", 8192, NULL, 5, NULL); // 自动异步获取设备配置更新 use_type (HTTPS+RSA加密需8KB栈空间)
             play_local_voice(PATH_V_NET_OK, TEXT_V_NET_OK);
         } else {
             ESP_LOGE(TAG, "Failed to verify internet connectivity (DNS resolution timed out).");

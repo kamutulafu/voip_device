@@ -21,6 +21,7 @@
 #include "api_test.h"
 
 #include "dialogue.h"
+#include "time_sync.h"
 
 int cmd_zmodem_send(int argc, char **argv);
 int cmd_zmodem_recv(int argc, char **argv);
@@ -169,6 +170,15 @@ static void register_debug_console_commands(void)
         .func = &cmd_voice_update,
     };
     ESP_ERROR_CHECK(console_register_cmd(&cmd_voice_update_cfg));
+
+    // Register date command (debug helper to verify boot time sync)
+    const esp_console_cmd_t cmd_date_cfg = {
+        .command = "date",
+        .help = "Print current system time (UTC) to verify boot time sync",
+        .hint = NULL,
+        .func = &cmd_date,
+    };
+    ESP_ERROR_CHECK(console_register_cmd(&cmd_date_cfg));
 }
 #endif /* APP_BUILD_DEBUG */
 
