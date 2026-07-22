@@ -73,8 +73,11 @@ void dialogue_greeting(void);
 /** 1.2 识别成功、无留言的欢迎语（菜单）。@p name 宝宝姓名。 */
 void dialogue_welcome_menu(const char *name);
 
-/** 1.2 识别失败的受限菜单欢迎语（仅公益留言）。 */
+/** 1.2 陌生人欢迎语。 */
 void dialogue_welcome_unknown(void);
+
+/** 1.2 公益用户在校外版设备的提示语。@p name 宝宝姓名。 */
+void dialogue_welcome_public_offcampus(const char *name);
 
 /** 1.3 长时间无回应的告别语（挂断前）。 */
 void dialogue_timeout_bye(void);

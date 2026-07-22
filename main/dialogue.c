@@ -291,14 +291,19 @@ void dialogue_greeting(void)
 
 void dialogue_welcome_menu(const char *name)
 {
-    dialogue_speak_fmt("哇，%s您好，很高兴为您服务，您可以说发留言、打电话或者加好友，说完请说over！",
+    dialogue_speak_fmt("哇，%s你好，很高兴为你服务，你可以说发留言打电话或者加好友，说完请说over",
                        (name && name[0]) ? name : "小朋友");
 }
 
 void dialogue_welcome_unknown(void)
 {
-    dialogue_speak("您好，我还不认识您呢，快让家长开通吧。"
-                   "您也可以说发留言使用我的公益服务，说完请说over！");
+    dialogue_speak("你好，我还不认识你呢，快让你的家长开通吧，也可以说发留言来使用我的公益服务");
+}
+
+void dialogue_welcome_public_offcampus(const char *name)
+{
+    dialogue_speak_fmt("哇，%s你好，你是公益用户，无法使用校外版设备",
+                       (name && name[0]) ? name : "小朋友");
 }
 
 void dialogue_timeout_bye(void)

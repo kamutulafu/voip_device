@@ -34,6 +34,12 @@ int cmd_voice_wake(int argc, char **argv);
 /** Register the voice_wake console command. */
 void register_voice_wake_cmd(void);
 
+/** Get current device use type (0=收费/校外, 1=免费/校内). */
+int get_device_use_type(void);
+
+/** Set device use type (0=收费/校外, 1=免费/校内). */
+void set_device_use_type(int use_type);
+
 #ifdef __cplusplus
 }
 #endif

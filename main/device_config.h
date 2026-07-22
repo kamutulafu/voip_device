@@ -8,6 +8,11 @@
 #define DEVICE_ID           "RD2600000001"
 #define BACKEND_BASE_URL    "https://gateway.tdskynet.com"
 
+/* Device use type: 0 = 收费使用（校外），1 = 免费使用（校内） */
+#ifndef CONFIG_DEVICE_USE_TYPE
+#define CONFIG_DEVICE_USE_TYPE 0
+#endif
+
 /* =========================================================================
  * 1.1 Hardware pins (ESP32-P4)
  * ========================================================================= */

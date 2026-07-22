@@ -82,6 +82,7 @@ typedef struct {
     char baby_name[40];
     int  is_reg_user;
     int  is_reg_stranger;
+    int  equipment_status; /* 会员状态: 1=公益版, 2=商业版, 0=其他/null */
     bool face_ok;         /* recognition succeeded */
 
     contact_t contacts[MAX_CONTACTS];
@@ -95,6 +96,19 @@ typedef struct {
 } session_t;
 
 static session_t s_sess;
+static int s_device_use_type = CONFIG_DEVICE_USE_TYPE; /* 0=收费/校外, 1=免费/校内 */
+
+int get_device_use_type(void)
+{
+    return s_device_use_type;
+}
+
+void set_device_use_type(int use_type)
+{
+    s_device_use_type = use_type;
+    ESP_LOGI("voice_flow", "Device useType set to %d (%s)", use_type, use_type == 1 ? "校内版" : "校外版");
+}
+
 static volatile bool s_session_active = false;
 static volatile bool s_voip_call_connected = false;
 static TaskHandle_t s_voice_task_handle = NULL;
@@ -253,6 +267,9 @@ static bool handle_face_result(api_result_t *res, session_t *s)
     }
     s->is_reg_user     = json_int(data, "isRegUser", 0);
     s->is_reg_stranger = json_int(data, "isRegStranger", 0);
+    s->equipment_status = json_int(data, "equipmentStatus", 0);
+    ESP_LOGI(TAG, "searchFace2 result: babyName=%s, babyId=%s, equipmentStatus=%d, isRegUser=%d, isRegStranger=%d",
+             s->baby_name, s->baby_id, s->equipment_status, s->is_reg_user, s->is_reg_stranger);
     parse_contacts(data, s);
 
     if (owned) {
@@ -977,13 +994,20 @@ static void voice_task(void *arg)
         }
 
         if (!is_stranger) {
-            // Registered user: welcome menu and check unread messages
-            int n = fetch_leave_msgs(s);
-            if (n <= 0) {
-                dialogue_welcome_menu(s->baby_name);
-                handle_menu(s, false);
+            int use_type = get_device_use_type(); // 0 = 校外版设备, 1 = 校内版设备
+            if (s->equipment_status == 1 && use_type == 0) {
+                // 公益用户 + 校外版设备 -> 无法使用校外版设备
+                ESP_LOGW(TAG, "Public benefit user (%s) attempted to use off-campus device", s->baby_name);
+                dialogue_welcome_public_offcampus(s->baby_name);
             } else {
-                handle_messages(s);
+                // Registered user (公益用户+校内版 或 商业用户+校外/校内版): welcome menu and check unread messages
+                int n = fetch_leave_msgs(s);
+                if (n <= 0) {
+                    dialogue_welcome_menu(s->baby_name);
+                    handle_menu(s, false);
+                } else {
+                    handle_messages(s);
+                }
             }
         } else {
             // Stranger: save stranger face info is done on server. Play stranger welcome and restricted menu.
@@ -1196,6 +1220,19 @@ int cmd_voice_wake(int argc, char **argv)
     return 0;
 }
 
+int cmd_set_use_type(int argc, char **argv)
+{
+    if (argc < 2) {
+        printf("Usage: set_use_type <0|1>  (0=校外/收费, 1=校内/免费). Current: %d (%s)\n",
+               get_device_use_type(), get_device_use_type() == 1 ? "校内版" : "校外版");
+        return 0;
+    }
+    int val = atoi(argv[1]);
+    set_device_use_type(val);
+    printf("Device useType set to %d (%s)\n", val, val == 1 ? "校内版" : "校外版");
+    return 0;
+}
+
 void register_voice_wake_cmd(void)
 {
     const esp_console_cmd_t cmd = {
@@ -1205,4 +1242,13 @@ void register_voice_wake_cmd(void)
         .func = &cmd_voice_wake,
     };
     console_register_cmd(&cmd);
+
+    const esp_console_cmd_t cmd_ut = {
+        .command = "set_use_type",
+        .help = "Set device useType (0=off-campus/fee, 1=on-campus/free)",
+        .hint = "<0|1>",
+        .func = &cmd_set_use_type,
+    };
+    console_register_cmd(&cmd_ut);
 }
+

@@ -9,6 +9,8 @@
 #include "esp_timer.h"
 #include "cJSON.h"
 #include "api_service.h"
+#include "api_crypto.h"
+#include "voice_flow.h"
 
 static const char *TAG = "api_service";
 static char s_base_url[128] = "https://gateway.tdskynet.com";
@@ -293,6 +295,33 @@ api_result_t* api_get_device_config(const char *device_id, int vn) {
     api_result_t *res = api_execute(HTTP_METHOD_POST, "/wechat-service/api/device/getDeviceConfig", NULL, NULL, NULL, NULL, json_body, NULL, NULL, NULL);
     cJSON_Delete(req);
     free(json_body);
+
+    if (res && res->data) {
+        cJSON *data_obj = NULL;
+        bool need_free_obj = false;
+        if (cJSON_IsObject(res->data)) {
+            data_obj = res->data;
+        } else if (cJSON_IsString(res->data) && res->data->valuestring) {
+            char *plain = api_crypto_rsa_decrypt(res->data->valuestring);
+            if (plain) {
+                data_obj = cJSON_Parse(plain);
+                free(plain);
+                if (data_obj) need_free_obj = true;
+            }
+        }
+
+        if (data_obj) {
+            cJSON *ut = cJSON_GetObjectItemCaseSensitive(data_obj, "useType");
+            if (cJSON_IsNumber(ut)) {
+                set_device_use_type(ut->valueint);
+            } else if (cJSON_IsString(ut) && ut->valuestring) {
+                set_device_use_type(atoi(ut->valuestring));
+            }
+            if (need_free_obj) {
+                cJSON_Delete(data_obj);
+            }
+        }
+    }
     return res;
 }
 
