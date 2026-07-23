@@ -120,6 +120,15 @@ static void register_debug_console_commands(void)
     };
     ESP_ERROR_CHECK(console_register_cmd(&cmd_audio_play_cfg));
 
+    // Register set_volume command
+    const esp_console_cmd_t cmd_set_volume_cfg = {
+        .command = "set_volume",
+        .help = "Set or query speaker playback volume (0-100)",
+        .hint = "[volume_percent]",
+        .func = &cmd_set_volume,
+    };
+    ESP_ERROR_CHECK(console_register_cmd(&cmd_set_volume_cfg));
+
     // Register speech recognition (ASR) test command
     const esp_console_cmd_t cmd_asr_test_cfg = {
         .command = "asr_test",

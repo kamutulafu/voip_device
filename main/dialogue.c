@@ -60,7 +60,7 @@ static esp_err_t ensure_beep_file(void); /* forward decl */
  * itself notices (via audio_play_is_aborted()) and stops early. */
 static esp_err_t worker_synth_and_play(const speech_item_t *it)
 {
-    (void)audio_set_volume(AUDIO_DEFAULT_VOLUME);
+    (void)audio_set_volume(audio_get_volume());
 
     if (it->generation != s_sp_generation) {
         ESP_LOGI(TAG, "utterance aborted before synth, skipping");
@@ -105,7 +105,7 @@ static void speech_worker_task(void *arg)
             struct stat st;
             if (stat(it->path, &st) == 0 && S_ISREG(st.st_mode)) {
                 ESP_LOGI(TAG, "Playing local voice: %s", it->path);
-                (void)audio_set_volume(AUDIO_DEFAULT_VOLUME);
+                (void)audio_set_volume(audio_get_volume());
                 audio_play_clear_abort();
                 err = audio_play_from_file(it->path);
             } else if (it->text[0] != '\0') {

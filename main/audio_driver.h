@@ -7,7 +7,7 @@
 #include <stdbool.h>
 
 /* Default speaker volume (0-100). 75% balances loudness vs clipping on the PA. */
-#define AUDIO_DEFAULT_VOLUME    55
+#define AUDIO_DEFAULT_VOLUME    80
 
 /**
  * @brief Initialize the audio system (I2C, ES8311 Codec, and I2S)
@@ -175,5 +175,12 @@ esp_err_t audio_read_raw(void *dest, size_t size, size_t *bytes_read, uint32_t t
 // Console command functions
 int cmd_audio_record(int argc, char **argv);
 int cmd_audio_play(int argc, char **argv);
+int cmd_set_volume(int argc, char **argv);
+
+/**
+ * @brief Get the current speaker playback volume
+ * @return Current volume level (0 to 100 percent)
+ */
+uint8_t audio_get_volume(void);
 
 #endif // AUDIO_DRIVER_H

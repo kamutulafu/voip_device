@@ -12,8 +12,13 @@
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "uvc_stream.h"
+#include "nvs_flash.h"
+#include "nvs.h"
 
 static const char *TAG = "audio_driver";
+
+#define AUDIO_NVS_NAMESPACE     "audio_cfg"
+#define AUDIO_NVS_KEY_VOL       "volume"
 
 #define ES8311_I2C_ADDR         0x18
 #define GPIO_OUTPUT_PA          53
@@ -42,6 +47,19 @@ static volatile bool s_play_abort_flag = false;
 void audio_play_abort(void)
 {
     s_play_abort_flag = true;
+}
+
+static uint8_t audio_load_saved_volume(void)
+{
+    nvs_handle_t handle;
+    uint8_t vol = AUDIO_DEFAULT_VOLUME;
+    if (nvs_open(AUDIO_NVS_NAMESPACE, NVS_READONLY, &handle) == ESP_OK) {
+        if (nvs_get_u8(handle, AUDIO_NVS_KEY_VOL, &vol) != ESP_OK || vol > 100) {
+            vol = AUDIO_DEFAULT_VOLUME;
+        }
+        nvs_close(handle);
+    }
+    return vol;
 }
 
 void audio_play_clear_abort(void)
@@ -153,7 +171,7 @@ static esp_err_t es8311_init_internal(void)
     // Unmute DAC and set default speaker volume
     ret |= es8311_write_reg(ES8311_REG_DAC_MUTE, 0x00);
     {
-        uint8_t vol = AUDIO_DEFAULT_VOLUME;
+        uint8_t vol = audio_load_saved_volume();
         if (vol > 100) {
             vol = 100;
         }
@@ -286,11 +304,12 @@ esp_err_t audio_init(void)
     gpio_set_level(GPIO_OUTPUT_PA, 1);
     (void)es8311_write_reg(ES8311_REG_DAC_MUTE, 0x00);
     {
-        uint8_t reg32 = (AUDIO_DEFAULT_VOLUME == 0)
+        uint8_t vol = audio_load_saved_volume();
+        uint8_t reg32 = (vol == 0)
                             ? 0
-                            : (uint8_t)((AUDIO_DEFAULT_VOLUME * 256 / 100) - 1);
+                            : (uint8_t)((vol * 256 / 100) - 1);
         (void)es8311_write_reg(ES8311_REG_DAC_VOLUME, reg32);
-        s_current_volume = AUDIO_DEFAULT_VOLUME;
+        s_current_volume = vol;
     }
     ESP_LOGI(TAG, "Audio Driver initialized successfully (volume=%u%%, PA=on)",
              (unsigned)s_current_volume);
@@ -1075,8 +1094,42 @@ esp_err_t audio_set_volume(uint8_t volume)
         s_current_volume = volume;
         ESP_LOGI(TAG, "Speaker volume -> %u%% (DAC reg 0x32=0x%02X)",
                  (unsigned)volume, reg_val);
+        nvs_handle_t handle;
+        if (nvs_open(AUDIO_NVS_NAMESPACE, NVS_READWRITE, &handle) == ESP_OK) {
+            nvs_set_u8(handle, AUDIO_NVS_KEY_VOL, volume);
+            nvs_commit(handle);
+            nvs_close(handle);
+        }
     }
     return err;
+}
+
+uint8_t audio_get_volume(void)
+{
+    return s_current_volume;
+}
+
+int cmd_set_volume(int argc, char **argv)
+{
+    if (argc < 2) {
+        printf("Current speaker volume: %u%%\n", (unsigned)audio_get_volume());
+        printf("Usage: set_volume <0-100>\n");
+        return 0;
+    }
+
+    int vol = atoi(argv[1]);
+    if (vol < 0 || vol > 100) {
+        printf("Invalid volume (0 to 100)\n");
+        return 1;
+    }
+
+    esp_err_t err = audio_set_volume((uint8_t)vol);
+    if (err != ESP_OK) {
+        printf("Failed to set volume: %s\n", esp_err_to_name(err));
+        return 1;
+    }
+    printf("Speaker volume set to %d%% and saved to NVS\n", vol);
+    return 0;
 }
 
 int cmd_audio_play(int argc, char **argv)
