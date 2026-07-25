@@ -7,7 +7,7 @@
 #include <stdbool.h>
 
 /* Default speaker volume (0-100). 75% balances loudness vs clipping on the PA. */
-#define AUDIO_DEFAULT_VOLUME    80
+#define AUDIO_DEFAULT_VOLUME    55
 
 /**
  * @brief Initialize the audio system (I2C, ES8311 Codec, and I2S)
@@ -176,6 +176,17 @@ esp_err_t audio_read_raw(void *dest, size_t size, size_t *bytes_read, uint32_t t
 int cmd_audio_record(int argc, char **argv);
 int cmd_audio_play(int argc, char **argv);
 int cmd_set_volume(int argc, char **argv);
+int cmd_es8311_read(int argc, char **argv);
+
+/**
+ * @brief Read a single register from ES8311 via I2C
+ */
+esp_err_t audio_es8311_read_reg(uint8_t reg, uint8_t *val);
+
+/**
+ * @brief Dump ES8311 registers to console (useful for logic analyzer capture)
+ */
+esp_err_t audio_es8311_dump_registers(void);
 
 /**
  * @brief Get the current speaker playback volume

@@ -129,6 +129,15 @@ static void register_debug_console_commands(void)
     };
     ESP_ERROR_CHECK(console_register_cmd(&cmd_set_volume_cfg));
 
+    // Register es8311_read command for logic analyzer testing
+    const esp_console_cmd_t cmd_es8311_read_cfg = {
+        .command = "es8311_read",
+        .help = "Read ES8311 codec register(s) via I2C for logic analyzer testing",
+        .hint = "[reg_hex_or_dec]",
+        .func = &cmd_es8311_read,
+    };
+    ESP_ERROR_CHECK(console_register_cmd(&cmd_es8311_read_cfg));
+
     // Register speech recognition (ASR) test command
     const esp_console_cmd_t cmd_asr_test_cfg = {
         .command = "asr_test",

@@ -36,6 +36,16 @@
 #include "lwip/sockets.h"
 #include "lwip/netdb.h"
 
+#ifdef _IO
+#undef _IO
+#endif
+#ifdef _IOR
+#undef _IOR
+#endif
+#ifdef _IOW
+#undef _IOW
+#endif
+
 #include "linux/videodev2.h"
 #include "esp_video_device.h"
 

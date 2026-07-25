@@ -21,17 +21,17 @@ static const char *TAG = "audio_driver";
 #define AUDIO_NVS_KEY_VOL       "volume"
 
 #define ES8311_I2C_ADDR         0x18
-#define GPIO_OUTPUT_PA          53
+#define GPIO_OUTPUT_PA          -1      /* 外接 ES8311 模块 PA-EN 已硬件上拉 3.3V 打开，不使用 GPIO53 */
 
 #define I2S_NUM                 0
-#define I2S_MCK_IO              13
-#define I2S_BCK_IO              12
-#define I2S_WS_IO               10
-#define I2S_DO_IO               9
-#define I2S_DI_IO               11
+#define I2S_MCK_IO              I2S_GPIO_UNUSED /* ES8311 3-Wire 模式（完全无需 MCK 引脚，由 BCK 自供给内部主时钟） */
+#define I2S_BCK_IO              21      /* 位时钟 BCK -> GPIO 21 (32bit slot: 16k*32*2 = 1.024MHz) */
+#define I2S_WS_IO               24      /* 帧时钟 WS -> GPIO 24 */
+#define I2S_DO_IO               33      /* ESP32 DOUT -> 芯片 DI (SDIN/扬声器播放数据) */
+#define I2S_DI_IO               25      /* ESP32 DIN  -> 芯片 DO (SDOUT/麦克风录音数据) */
 
-#define AUDIO_SAMPLE_RATE       16000
-#define AUDIO_MCLK_MULTIPLE     384
+#define AUDIO_SAMPLE_RATE       16000   /* 16 kHz 语音通讯标准模式 */
+#define AUDIO_MCLK_MULTIPLE     256     /* 256x Fs = 4.096 MHz (较低辐射、边沿干净的方波) */
 
 /* ES8311 DAC volume register (0x32): 0 = mute, 0xFF = max (~0 dB scale). */
 #define ES8311_REG_DAC_VOLUME   0x32
@@ -99,7 +99,7 @@ static esp_err_t es8311_write_reg(uint8_t reg, uint8_t val)
     return i2c_master_transmit(s_es8311_i2c_handle, buf, 2, pdMS_TO_TICKS(1000));
 }
 
-static esp_err_t __attribute__((unused)) es8311_read_reg(uint8_t reg, uint8_t *val)
+esp_err_t audio_es8311_read_reg(uint8_t reg, uint8_t *val)
 {
     if (s_es8311_i2c_handle == NULL) {
         return ESP_ERR_INVALID_STATE;
@@ -111,6 +111,9 @@ static esp_err_t es8311_init_internal(void)
 {
     esp_err_t ret = ESP_OK;
 
+    // Wait 20ms for ES8311 chip 3.3V power domain to stabilize upon cold boot
+    vTaskDelay(pdMS_TO_TICKS(20));
+
     // Reset ES8311
     ret |= es8311_write_reg(0x00, 0x1F);
     vTaskDelay(pdMS_TO_TICKS(20));
@@ -118,12 +121,16 @@ static esp_err_t es8311_init_internal(void)
     ret |= es8311_write_reg(0x00, 0x80); // Power on
     vTaskDelay(pdMS_TO_TICKS(10));
 
-    // Clock configuration: 16 kHz sample rate, 384x MCLK multiple (MCLK = 6.144 MHz)
-    // Register 01: 0x3F (All clocks enabled, MCLK pin source)
-    ret |= es8311_write_reg(0x01, 0x3F);
+    // Clock configuration: ES8311 3-Wire I2S mode (Uses BCK pin as internal MCLK source)
+    // I2S 侧使用 32bit slot，因此 BCK = Fs * 32 * 2 = 64 x Fs (16kHz -> 1.024 MHz)
+    // Register 01: 0xBF (Bit 7=1: Use BCK pin as MCLK source, all clocks enabled)
+    ret |= es8311_write_reg(0x01, 0xBF);
 
-    // Register 02: Pre-div=3, pre-multi=1 -> (3-1)<<5 | 1<<3 = 0x48
-    ret |= es8311_write_reg(0x02, 0x48);
+    // Register 02: pre_div=1, pre_multi=x4 -> (1-1)<<5 | 0x02<<3 = 0x10
+    // 内部时钟 = 64 x Fs x 4 = 256 x Fs (4.096 MHz @16kHz)，与官方 coeff 表
+    // {1024000, 16000, pre_div 1, pre_multi 0x02} 一致；若 pre_multi 配成 x1/x2
+    // 则内部时钟不足 256Fs，DAC 不出声。
+    ret |= es8311_write_reg(0x02, 0x10);
 
     // Register 03: fs_mode=0, adc_osr=16 -> 0x10
     ret |= es8311_write_reg(0x03, 0x10);
@@ -154,7 +161,7 @@ static esp_err_t es8311_init_internal(void)
     ret |= es8311_write_reg(0x0D, 0x01); // Power up analog circuitry
     ret |= es8311_write_reg(0x0E, 0x02); // Enable analog PGA, enable ADC modulator
     ret |= es8311_write_reg(0x12, 0x00); // Power up DAC
-    ret |= es8311_write_reg(0x13, 0x10); // Enable output to HP drive (headphones/speaker)
+    ret |= es8311_write_reg(0x13, 0x10); // Enable output to HP drive (必须为 0x10，写 0x00 会完全没声音)
     ret |= es8311_write_reg(0x1C, 0x6A); // ADC Equalizer bypass, cancel DC offset
     ret |= es8311_write_reg(0x37, 0x08); // Bypass DAC equalizer
 
@@ -183,6 +190,9 @@ static esp_err_t es8311_init_internal(void)
                  (unsigned)vol, reg32);
     }
 
+    /* Power on (CSM) last, after clock / format / analog config - 与官方驱动顺序一致 */
+    ret |= es8311_write_reg(0x00, 0x80);
+
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "ES8311 register init failed");
         return ESP_FAIL;
@@ -198,26 +208,28 @@ esp_err_t audio_init(void)
         return ESP_OK;
     }
 
-    // 1. Initialize PA GPIO
-    gpio_config_t io_conf = {
-        .pin_bit_mask = (1ULL << GPIO_OUTPUT_PA),
-        .mode = GPIO_MODE_OUTPUT,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .pull_up_en = GPIO_PULLUP_DISABLE,
-        .intr_type = GPIO_INTR_DISABLE
-    };
-    gpio_config(&io_conf);
-    gpio_set_level(GPIO_OUTPUT_PA, 1); // Enable PA
+    // 1. Initialize PA GPIO (if configured)
+    if (GPIO_OUTPUT_PA >= 0) {
+        gpio_config_t io_conf = {
+            .pin_bit_mask = (1ULL << (GPIO_OUTPUT_PA >= 0 ? GPIO_OUTPUT_PA : 0)),
+            .mode = GPIO_MODE_OUTPUT,
+            .pull_down_en = GPIO_PULLDOWN_DISABLE,
+            .pull_up_en = GPIO_PULLUP_DISABLE,
+            .intr_type = GPIO_INTR_DISABLE
+        };
+        gpio_config(&io_conf);
+        gpio_set_level(GPIO_OUTPUT_PA, 1); // Enable PA
+    }
 
     // 2. Initialize I2C Bus & Add ES8311 device
     i2c_master_bus_handle_t i2c_bus = uvc_get_i2c_bus_handle();
     if (i2c_bus == NULL) {
-        ESP_LOGI(TAG, "Initializing I2C Master Bus (SDA=7, SCL=8) for Audio...");
+        ESP_LOGI(TAG, "Initializing I2C Master Bus (SDA=2, SCL=3) for Audio...");
         i2c_master_bus_config_t i2c_bus_cfg = {
             .clk_source = I2C_CLK_SRC_DEFAULT,
             .i2c_port = 0,
-            .scl_io_num = 8,
-            .sda_io_num = 7,
+            .scl_io_num = 3,
+            .sda_io_num = 2,
             .glitch_ignore_cnt = 7,
             .flags.enable_internal_pullup = true,
         };
@@ -234,7 +246,7 @@ esp_err_t audio_init(void)
     i2c_device_config_t dev_cfg = {
         .dev_addr_length = I2C_ADDR_BIT_LEN_7,
         .device_address = ES8311_I2C_ADDR,
-        .scl_speed_hz = 100000,
+        .scl_speed_hz = 20000, /* 20 kHz I2C speed for maximum noise immunity */
     };
     esp_err_t err = i2c_master_bus_add_device(i2c_bus, &dev_cfg, &s_es8311_i2c_handle);
     if (err != ESP_OK) {
@@ -242,13 +254,14 @@ esp_err_t audio_init(void)
         return err;
     }
 
-    // 3. Initialize ES8311 Codec via I2C
+    // 3. Initialize ES8311 Codec via I2C (Before I2S clocks start)
     err = es8311_init_internal();
     if (err != ESP_OK) {
+        ESP_LOGE(TAG, "ES8311 codec internal init failed: %s", esp_err_to_name(err));
         return err;
     }
 
-    // 4. Initialize I2S Channels
+    // 4. Initialize & Enable I2S Channels (Audio data transmission)
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM, I2S_ROLE_MASTER);
     chan_cfg.auto_clear = true;
     err = i2s_new_channel(&chan_cfg, &tx_handle, &rx_handle);
@@ -273,6 +286,10 @@ esp_err_t audio_init(void)
             },
         },
     };
+    /* 32-bit slot: BCK = Fs * 64 (16kHz -> 1.024 MHz)，ES8311 以 BCK 作为内部 MCLK
+     * 时必须 >= 64 x Fs，官方 coeff 表也只支持到 64 x Fs。数据仍为 16bit，
+     * 高 16bit 有效、低 16bit 补 0，ES8311 SDP 配 16bit 可正确锁存。 */
+    std_cfg.slot_cfg.slot_bit_width = I2S_SLOT_BIT_WIDTH_32BIT;
     std_cfg.clk_cfg.mclk_multiple = AUDIO_MCLK_MULTIPLE;
 
     err = i2s_channel_init_std_mode(tx_handle, &std_cfg);
@@ -300,16 +317,8 @@ esp_err_t audio_init(void)
     }
 
     s_audio_initialized = true;
-    /* Re-assert PA + volume after full bring-up (VoIP / TTS paths rely on this). */
-    gpio_set_level(GPIO_OUTPUT_PA, 1);
-    (void)es8311_write_reg(ES8311_REG_DAC_MUTE, 0x00);
-    {
-        uint8_t vol = audio_load_saved_volume();
-        uint8_t reg32 = (vol == 0)
-                            ? 0
-                            : (uint8_t)((vol * 256 / 100) - 1);
-        (void)es8311_write_reg(ES8311_REG_DAC_VOLUME, reg32);
-        s_current_volume = vol;
+    if (GPIO_OUTPUT_PA >= 0) {
+        gpio_set_level(GPIO_OUTPUT_PA, 1);
     }
     ESP_LOGI(TAG, "Audio Driver initialized successfully (volume=%u%%, PA=on)",
              (unsigned)s_current_volume);
@@ -322,7 +331,9 @@ void audio_deinit(void)
         return;
     }
 
-    gpio_set_level(GPIO_OUTPUT_PA, 0); // Disable PA
+    if (GPIO_OUTPUT_PA >= 0) {
+        gpio_set_level(GPIO_OUTPUT_PA, 0); // Disable PA
+    }
 
     if (tx_handle) {
         i2s_channel_disable(tx_handle);
@@ -833,7 +844,7 @@ esp_err_t audio_play_pcm_write(const int16_t *pcm, size_t num_samples, int chann
     size_t written = 0;
 
     if (channels == 1) {
-        /* Expand mono to the stereo I2S slot in chunks, muting Right channel. */
+        /* Duplicate mono sample to both Left and Right I2S slots. */
         static int16_t stereo[1024];
         const size_t CHUNK = 512; /* mono samples per pass */
         size_t i = 0;
@@ -841,8 +852,8 @@ esp_err_t audio_play_pcm_write(const int16_t *pcm, size_t num_samples, int chann
             size_t n = num_samples - i;
             if (n > CHUNK) n = CHUNK;
             for (size_t k = 0; k < n; k++) {
-                stereo[2 * k]     = pcm[i + k];
-                stereo[2 * k + 1] = 0; // Mute Right channel
+                stereo[2 * k]     = pcm[i + k]; // Left channel
+                stereo[2 * k + 1] = pcm[i + k]; // Right channel (duplicate for ES8311 DAC)
             }
             esp_err_t err = i2s_channel_write(tx_handle, stereo, n * 2 * sizeof(int16_t),
                                               &written, pdMS_TO_TICKS(1000));
@@ -852,7 +863,7 @@ esp_err_t audio_play_pcm_write(const int16_t *pcm, size_t num_samples, int chann
             i += n;
         }
     } else {
-        /* Play stereo PCM by copying and muting Right channel to avoid modifying const flash data. */
+        /* Play stereo PCM to both Left and Right I2S slots. */
         static int16_t stereo_play[1024];
         const size_t CHUNK = 512; /* stereo samples (frames) per pass */
         size_t i = 0;
@@ -860,8 +871,8 @@ esp_err_t audio_play_pcm_write(const int16_t *pcm, size_t num_samples, int chann
             size_t n = num_samples - i;
             if (n > CHUNK) n = CHUNK;
             for (size_t k = 0; k < n; k++) {
-                stereo_play[2 * k]     = pcm[2 * (i + k)]; // Left channel
-                stereo_play[2 * k + 1] = 0;               // Mute Right channel
+                stereo_play[2 * k]     = pcm[2 * (i + k)];     // Left channel
+                stereo_play[2 * k + 1] = pcm[2 * (i + k) + 1]; // Right channel
             }
             esp_err_t err = i2s_channel_write(tx_handle, stereo_play, n * 2 * sizeof(int16_t),
                                               &written, pdMS_TO_TICKS(1000));
@@ -1167,4 +1178,51 @@ int cmd_audio_play(int argc, char **argv)
     }
     printf("Played successfully from %s\n", filepath);
     return 0;
+}
+
+esp_err_t audio_es8311_dump_registers(void)
+{
+    static const uint8_t regs[] = {
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+        0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11,
+        0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x1C, 0x31, 0x32, 0x37,
+        0xFD, 0xFE, 0xFF
+    };
+    printf("\n=== ES8311 Register Dump (Logic Analyzer Test @ 20kHz) ===\n");
+    for (size_t i = 0; i < sizeof(regs) / sizeof(regs[0]); i++) {
+        uint8_t val = 0;
+        esp_err_t err = audio_es8311_read_reg(regs[i], &val);
+        if (err == ESP_OK) {
+            printf("Reg 0x%02X: 0x%02X\n", regs[i], val);
+        } else {
+            printf("Reg 0x%02X: READ ERROR (%s / NACK)\n", regs[i], esp_err_to_name(err));
+        }
+    }
+    printf("=========================================================\n\n");
+    return ESP_OK;
+}
+
+int cmd_es8311_read(int argc, char **argv)
+{
+    if (argc < 2) {
+        printf("Executing full ES8311 register dump (Logic Analyzer test)...\n");
+        audio_es8311_dump_registers();
+        printf("Usage: es8311_read [reg_hex_or_dec] (e.g. es8311_read 0x00 or es8311_read 50)\n");
+        return 0;
+    }
+
+    uint32_t reg = strtoul(argv[1], NULL, 0);
+    if (reg > 0xFF) {
+        printf("Invalid register address: %s (must be 0x00 - 0xFF)\n", argv[1]);
+        return 1;
+    }
+
+    uint8_t val = 0;
+    esp_err_t err = audio_es8311_read_reg((uint8_t)reg, &val);
+    if (err == ESP_OK) {
+        printf("ES8311 Reg 0x%02X = 0x%02X (%u)\n", (unsigned)reg, val, val);
+    } else {
+        printf("Failed to read ES8311 Reg 0x%02X: %s (NACK/I2C Error)\n", (unsigned)reg, esp_err_to_name(err));
+    }
+    return (err == ESP_OK) ? 0 : 1;
 }
