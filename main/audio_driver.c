@@ -36,11 +36,18 @@ static const char *TAG = "audio_driver";
 /* ES8311 DAC volume register (0x32): 0 = mute, 0xFF = max (~0 dB scale). */
 #define ES8311_REG_DAC_VOLUME   0x32
 #define ES8311_REG_DAC_MUTE     0x31
+/* 0x31 的 bit6|bit5 是 DAC 静音位，与官方 es8311_voice_mute() 一致 */
+#define ES8311_DAC_MUTE_BITS    0x60
+
+/* BCK(= 内部 MCLK) 起来后 ES8311 的时钟/模拟通路建立时间，实测留足余量 */
+#define ES8311_CLOCK_SETTLE_MS  20
+#define ES8311_OUTPUT_SETTLE_MS 60
 
 static i2c_master_dev_handle_t s_es8311_i2c_handle = NULL;
 static i2s_chan_handle_t tx_handle = NULL;
 static i2s_chan_handle_t rx_handle = NULL;
 static bool s_audio_initialized = false;
+static bool s_shutdown_handler_registered = false;
 static uint8_t s_current_volume = AUDIO_DEFAULT_VOLUME;
 static volatile bool s_play_abort_flag = false;
 
@@ -89,6 +96,21 @@ typedef struct {
     uint32_t subchunk2_size;   // data_size
 } wav_header_t;
 #pragma pack(pop)
+
+/**
+ * @brief 从一个立体声帧里取出麦克风数据。
+ *
+ * ES8311 是单声道 codec，ADC 数据只出现在 SDOUT 的一个声道上，另一侧是空数据。
+ * 之前代码把声道位置写死成"右声道"，那是为了迁就 ws_width 配错时的帧错位；
+ * 帧格式修正后声道位置会变。这里取幅度较大的一路，两种情况都正确：
+ * 空声道恒为 0 时永远选中有效声道；两声道都带同一路数据时二者相等，选哪个都一样。
+ */
+static inline int16_t mic_pick_channel(int16_t left, int16_t right)
+{
+    int32_t abs_l = (left  < 0) ? -(int32_t)left  : (int32_t)left;
+    int32_t abs_r = (right < 0) ? -(int32_t)right : (int32_t)right;
+    return (abs_l >= abs_r) ? left : right;
+}
 
 static esp_err_t es8311_write_reg(uint8_t reg, uint8_t val)
 {
@@ -175,19 +197,17 @@ static esp_err_t es8311_init_internal(void)
     ret |= es8311_write_reg(0x14, 0x1A); // Enable analog MIC (recommended analog init)
     ret |= es8311_write_reg(0x16, 0x03); // Restore Mic gain to +18 dB (was +12 dB)
 
-    // Unmute DAC and set default speaker volume
-    ret |= es8311_write_reg(ES8311_REG_DAC_MUTE, 0x00);
+    /* 此刻 BCK 还没有输出，而 3-Wire 模式下 BCK 就是 ES8311 的内部 MCLK，
+     * 也就是说 codec 现在完全没有时钟，CSM 上电 / 时钟管理器 / DAC 的 DC offset
+     * 抵消都还没真正开始建立。因此这里保持 DAC 静音，等 I2S 使能、BCK 稳定之后
+     * 再由 es8311_enable_output() 解除静音，避免第一段语音落在建立期里出现沙哑失真。 */
+    ret |= es8311_write_reg(ES8311_REG_DAC_MUTE, ES8311_DAC_MUTE_BITS);
     {
         uint8_t vol = audio_load_saved_volume();
         if (vol > 100) {
             vol = 100;
         }
-        /* Same mapping as es8311_voice_volume_set(): 0..100 -> 0x00..0xFF */
-        uint8_t reg32 = (vol == 0) ? 0 : (uint8_t)((vol * 256 / 100) - 1);
-        ret |= es8311_write_reg(ES8311_REG_DAC_VOLUME, reg32);
         s_current_volume = vol;
-        ESP_LOGI(TAG, "ES8311 DAC volume set to %u%% (reg 0x32=0x%02X)",
-                 (unsigned)vol, reg32);
     }
 
     /* Power on (CSM) last, after clock / format / analog config - 与官方驱动顺序一致 */
@@ -197,7 +217,38 @@ static esp_err_t es8311_init_internal(void)
         ESP_LOGE(TAG, "ES8311 register init failed");
         return ESP_FAIL;
     }
-    ESP_LOGI(TAG, "ES8311 Codec register init successful");
+    ESP_LOGI(TAG, "ES8311 Codec register init successful (DAC still muted)");
+    return ESP_OK;
+}
+
+/**
+ * @brief I2S 使能、BCK 稳定之后再打开 DAC 输出。
+ *
+ * 必须在 i2s_channel_enable() 之后调用：3-Wire 模式下 BCK 就是 ES8311 的内部
+ * MCLK 源，只有 BCK 在跑，CSM 上电和时钟管理器才会真正开始建立。这期间
+ * DMA 因为 auto_clear = true 送的是全 0，喇叭上是静音，等建立完成再解除静音。
+ */
+static esp_err_t es8311_enable_output(void)
+{
+    esp_err_t ret = ESP_OK;
+
+    vTaskDelay(pdMS_TO_TICKS(ES8311_CLOCK_SETTLE_MS));
+
+    /* 在有时钟的条件下重新执行一次 CSM 上电 */
+    ret |= es8311_write_reg(0x00, 0x80);
+    vTaskDelay(pdMS_TO_TICKS(ES8311_OUTPUT_SETTLE_MS));
+
+    /* Same mapping as es8311_voice_volume_set(): 0..100 -> 0x00..0xFF */
+    uint8_t reg32 = (s_current_volume == 0) ? 0 : (uint8_t)((s_current_volume * 256 / 100) - 1);
+    ret |= es8311_write_reg(ES8311_REG_DAC_VOLUME, reg32);
+    ret |= es8311_write_reg(ES8311_REG_DAC_MUTE, 0x00);
+
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "ES8311 output enable failed");
+        return ESP_FAIL;
+    }
+    ESP_LOGI(TAG, "ES8311 DAC unmuted, volume %u%% (reg 0x32=0x%02X)",
+             (unsigned)s_current_volume, reg32);
     return ESP_OK;
 }
 
@@ -290,6 +341,15 @@ esp_err_t audio_init(void)
      * 时必须 >= 64 x Fs，官方 coeff 表也只支持到 64 x Fs。数据仍为 16bit，
      * 高 16bit 有效、低 16bit 补 0，ES8311 SDP 配 16bit 可正确锁存。 */
     std_cfg.slot_cfg.slot_bit_width = I2S_SLOT_BIT_WIDTH_32BIT;
+
+    /* 关键：ws_width 必须跟着 slot 宽度一起改成 32。
+     * I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG() 把 ws_width 初始化为 data_bit_width(=16)，
+     * 而 i2s_hal 用 slot_bit_width 设置 half_sample_bit(=32)。二者不一致时，
+     * 一帧 64 个 BCK、半帧 32 个 BCK，但 WS 只维持 16 个 BCK ——
+     * LRCK 变成 16/48 的畸形波形而不是标准的 50% 方波。ES8311 按 LRCK 边沿划分声道，
+     * 右声道边沿提前 16 个 BCK，锁存到的是填充位，表现为声音沙哑失真、声道错位。 */
+    std_cfg.slot_cfg.ws_width = I2S_SLOT_BIT_WIDTH_32BIT;
+
     std_cfg.clk_cfg.mclk_multiple = AUDIO_MCLK_MULTIPLE;
 
     err = i2s_channel_init_std_mode(tx_handle, &std_cfg);
@@ -304,6 +364,16 @@ esp_err_t audio_init(void)
         return err;
     }
 
+    /* 杜邦线连接外部 ES8311 模块时，飞线无阻抗控制、地回流路径长，
+     * 默认驱动能力下 ns 级的边沿会在接收端产生过冲/振铃，并通过线间耦合
+     * 在相邻的 BCK 上打出毛刺，导致 ES8311 逐位锁存错位（表现为声音沙哑失真）。
+     * 这里把三根输出降到最弱驱动档，作用等同于在线上并一颗小电容 —— 放缓边沿。
+     * BCK 只有 1.024 MHz（16 kHz x 64），bit 周期约 500 ns，余量足够。
+     * 注意：这只是缓解手段，正解是源端串 33~100Ω 电阻并给每根信号配紧邻地线。 */
+    gpio_set_drive_capability(I2S_BCK_IO, GPIO_DRIVE_CAP_0);
+    gpio_set_drive_capability(I2S_WS_IO,  GPIO_DRIVE_CAP_0);
+    gpio_set_drive_capability(I2S_DO_IO,  GPIO_DRIVE_CAP_0);
+
     err = i2s_channel_enable(tx_handle);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to enable I2S TX: %s", esp_err_to_name(err));
@@ -316,7 +386,28 @@ esp_err_t audio_init(void)
         return err;
     }
 
+    /* BCK 现在才开始输出，等 ES8311 建立完成后再解除 DAC 静音 */
+    err = es8311_enable_output();
+    if (err != ESP_OK) {
+        return err;
+    }
+
     s_audio_initialized = true;
+
+    /* 关键：I2S 的 TX/RX DMA 一旦使能就会持续读写内存，而 esp_restart() 触发的是
+     * SW_CPU_RESET —— 它复位 CPU，但不会复位所有外设/DMA。DMA 在复位后继续搬运，
+     * 会覆盖 ROM loader 刚刚装载到 HP SRAM 里的二级 bootloader，导致
+     * "Illegal instruction" panic，再由 LP_WDT 复位一次才能正常启动。
+     * 注册 shutdown handler，让任何 esp_restart() 路径都先关掉 I2S 通道。 */
+    if (!s_shutdown_handler_registered) {
+        esp_err_t sh = esp_register_shutdown_handler(audio_deinit);
+        if (sh == ESP_OK) {
+            s_shutdown_handler_registered = true;
+        } else {
+            ESP_LOGW(TAG, "Failed to register audio shutdown handler: %s", esp_err_to_name(sh));
+        }
+    }
+
     if (GPIO_OUTPUT_PA >= 0) {
         gpio_set_level(GPIO_OUTPUT_PA, 1);
     }
@@ -416,6 +507,14 @@ esp_err_t audio_record_to_file(const char *filename, uint32_t duration_sec)
 
         esp_err_t ret = i2s_channel_read(rx_handle, buf, chunk, &bytes_read, pdMS_TO_TICKS(1000));
         if (ret == ESP_OK && bytes_read > 0) {
+            /* 麦克风只占一个声道，写文件前复制到左右两声道，回放时不会掉 6 dB */
+            int16_t *samples = (int16_t *)buf;
+            size_t frames = bytes_read / (2 * sizeof(int16_t));
+            for (size_t i = 0; i < frames; i++) {
+                int16_t mic = mic_pick_channel(samples[2 * i], samples[2 * i + 1]);
+                samples[2 * i]     = mic;
+                samples[2 * i + 1] = mic;
+            }
             size_t written = fwrite(buf, 1, bytes_read, f);
             if (written != bytes_read) {
                 ESP_LOGE(TAG, "File write failed. Disk full?");
@@ -521,7 +620,7 @@ esp_err_t audio_record_mono_pcm(int16_t **out_buf, size_t *out_num_samples, uint
 
         size_t stereo_frames = bytes_read / (2 * sizeof(int16_t)); // L+R per frame
         for (size_t i = 0; i < stereo_frames && mono_written < mono_samples; i++) {
-            mono[mono_written++] = stereo[2 * i + 1]; // keep right channel (microphone)
+            mono[mono_written++] = mic_pick_channel(stereo[2 * i], stereo[2 * i + 1]);
         }
     }
 
@@ -568,11 +667,25 @@ esp_err_t audio_play_from_file(const char *filename)
     ESP_LOGI(TAG, "Playing WAV: sample_rate=%d, channels=%d, bits=%d",
              (int)header.sample_rate, (int)header.num_channels, (int)header.bits_per_sample);
 
+    if (header.bits_per_sample != 16 || header.num_channels < 1 || header.num_channels > 2) {
+        ESP_LOGE(TAG, "Unsupported WAV format (only 16-bit mono/stereo is supported)");
+        fclose(f);
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    /* 必须按文件真实采样率重配 I2S 时钟。之前这里直接沿用当前时钟(默认 16 kHz)，
+     * 播放非 16 kHz 的 WAV 会整体变速，听起来就是含糊不清的"沙哑"声。 */
+    if (audio_play_pcm_begin(header.sample_rate) != ESP_OK) {
+        fclose(f);
+        return ESP_FAIL;
+    }
+
     // Allocate play buffers
     const uint32_t read_buf_size = 2048;
     uint8_t *read_buf = malloc(read_buf_size);
     if (read_buf == NULL) {
         ESP_LOGE(TAG, "Failed to allocate read buffer");
+        audio_play_pcm_end();
         fclose(f);
         return ESP_ERR_NO_MEM;
     }
@@ -588,6 +701,7 @@ esp_err_t audio_play_from_file(const char *filename)
         if (mono_to_stereo_buf == NULL) {
             ESP_LOGE(TAG, "Failed to allocate mono-to-stereo buffer");
             free(read_buf);
+            audio_play_pcm_end();
             fclose(f);
             return ESP_ERR_NO_MEM;
         }
@@ -605,23 +719,28 @@ esp_err_t audio_play_from_file(const char *filename)
         }
         uint32_t bytes_to_write = bytes_read;
 
+        /* ES8311 是单声道 codec，DAC 只取其中一个声道。这里把同一路数据复制到
+         * 左右两个 slot，无论 codec 取哪一侧都能拿到完整信号；之前把右声道写 0
+         * (以及立体声时直接丢弃右声道) 会造成半边通道无数据、音量与音质异常。 */
         if (header.num_channels == 1) {
-            // Convert mono to stereo (16-bit), keeping only Left channel
-            int16_t *mono_samples = (int16_t *)read_buf;
+            const int16_t *mono_samples = (const int16_t *)read_buf;
             int16_t *stereo_samples = (int16_t *)mono_to_stereo_buf;
             uint32_t num_samples = bytes_read / 2;
             for (uint32_t i = 0; i < num_samples; i++) {
-                stereo_samples[2 * i] = mono_samples[i];
-                stereo_samples[2 * i + 1] = 0; // Mute Right channel
+                stereo_samples[2 * i]     = mono_samples[i];
+                stereo_samples[2 * i + 1] = mono_samples[i];
             }
-            bytes_to_write = bytes_read * 2;
-        } else if (header.num_channels == 2) {
-            // Mute Right channel of the stereo buffer
+            bytes_to_write = num_samples * 2 * sizeof(int16_t);
+        } else {
+            /* 立体声下混为单声道后再复制到左右 slot */
             int16_t *stereo_samples = (int16_t *)read_buf;
-            uint32_t num_samples = bytes_read / 4;
-            for (uint32_t i = 0; i < num_samples; i++) {
-                stereo_samples[2 * i + 1] = 0; // Mute Right channel
+            uint32_t frames = bytes_read / 4;
+            for (uint32_t i = 0; i < frames; i++) {
+                int32_t mix = ((int32_t)stereo_samples[2 * i] + (int32_t)stereo_samples[2 * i + 1]) / 2;
+                stereo_samples[2 * i]     = (int16_t)mix;
+                stereo_samples[2 * i + 1] = (int16_t)mix;
             }
+            bytes_to_write = frames * 2 * sizeof(int16_t);
         }
 
         esp_err_t ret = i2s_channel_write(tx_handle, play_buf, bytes_to_write, &bytes_written, pdMS_TO_TICKS(1000));
@@ -629,12 +748,18 @@ esp_err_t audio_play_from_file(const char *filename)
             ESP_LOGE(TAG, "I2S write failed: %s", esp_err_to_name(ret));
             break;
         }
+        if (bytes_written != bytes_to_write) {
+            /* 写不完会在音频流里留下空洞，听起来就是断续/沙哑 */
+            ESP_LOGW(TAG, "I2S short write: %u/%u bytes",
+                     (unsigned)bytes_written, (unsigned)bytes_to_write);
+        }
     }
 
     free(read_buf);
     if (mono_to_stereo_buf) {
         free(mono_to_stereo_buf);
     }
+    audio_play_pcm_end();
     fclose(f);
 
     ESP_LOGI(TAG, "Playback finished.");
@@ -698,12 +823,13 @@ esp_err_t audio_record_to_mem(uint8_t **out_buf, size_t *out_len, uint32_t durat
 
         esp_err_t ret = i2s_channel_read(rx_handle, write_ptr + total_recorded_bytes, chunk, &bytes_read, pdMS_TO_TICKS(1000));
         if (ret == ESP_OK && bytes_read > 0) {
-            // Copy Right (microphone) channel to Left channel, and mute the Right channel.
+            // Put the microphone signal on both channels of the recorded stereo frame.
             int16_t *samples = (int16_t *)(write_ptr + total_recorded_bytes);
-            size_t num_samples = bytes_read / sizeof(int16_t);
-            for (size_t i = 0; i < num_samples / 2; i++) {
-                samples[2 * i] = samples[2 * i + 1];
-                samples[2 * i + 1] = 0;
+            size_t frames = bytes_read / (2 * sizeof(int16_t));
+            for (size_t i = 0; i < frames; i++) {
+                int16_t mic = mic_pick_channel(samples[2 * i], samples[2 * i + 1]);
+                samples[2 * i]     = mic;
+                samples[2 * i + 1] = mic;
             }
             total_recorded_bytes += bytes_read;
         } else {
@@ -1090,8 +1216,12 @@ esp_err_t audio_set_volume(uint8_t volume)
         volume = 100;
     }
 
-    /* Keep PA enabled whenever we raise playback level. */
-    gpio_set_level(GPIO_OUTPUT_PA, 1);
+    /* Keep PA enabled whenever we raise playback level.
+     * 外接模组的 PA-EN 硬件常开，GPIO_OUTPUT_PA = -1，必须判断后再调用，
+     * 否则 gpio_set_level(-1) 会打印 "GPIO output gpio_num error"。 */
+    if (GPIO_OUTPUT_PA >= 0) {
+        gpio_set_level(GPIO_OUTPUT_PA, 1);
+    }
     /* Clear soft-mute on DAC. */
     esp_err_t err = es8311_write_reg(ES8311_REG_DAC_MUTE, 0x00);
     if (err != ESP_OK) {

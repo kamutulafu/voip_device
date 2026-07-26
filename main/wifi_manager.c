@@ -33,6 +33,22 @@ static EventGroupHandle_t s_wifi_event_group = NULL;
 #define WIFI_FAIL_BIT      BIT1
 static int s_retry_num = 0;
 
+/* NVS 存储位置 */
+#define WIFI_NVS_NAMESPACE  "wifi_cfg"
+#define WIFI_NVS_KEY_SSID   "ssid"
+#define WIFI_NVS_KEY_PWD    "pwd"
+
+/* 802.11 规定 SSID 最长 32 字节、PSK 最长 63 字节，缓冲区必须再留 1 字节给 '\0'，
+ * 否则 nvs_get_str() 会返回 ESP_ERR_NVS_INVALID_LENGTH，导致已保存的配置被误判为"无配置" */
+#define WIFI_SSID_BUF_LEN   (32 + 1)
+#define WIFI_PWD_BUF_LEN    (64 + 1)
+
+/* STA 连接等待上限，超时后回落到 AP 配网模式，避免任务永久阻塞 */
+#define WIFI_CONNECT_TIMEOUT_MS  (40 * 1000)
+
+/* 仅在主动发起 STA 连接期间才允许事件回调自动重连 */
+static volatile bool s_sta_connecting = false;
+
 static esp_netif_t *s_sta_netif = NULL;
 static esp_netif_t *s_ap_netif = NULL;
 static bool s_wifi_inited = false;
@@ -220,39 +236,115 @@ static const char *success_html =
 "</body>\n"
 "</html>";
 
+static const char *failure_html =
+"<!DOCTYPE html>\n"
+"<html>\n"
+"<head>\n"
+"    <meta charset=\"utf-8\">\n"
+"    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
+"    <title>配置保存失败</title>\n"
+"    <style>\n"
+"        body {\n"
+"            font-family: -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, sans-serif;\n"
+"            background: linear-gradient(135deg, #0f172a, #1e1b4b);\n"
+"            color: #f8fafc;\n"
+"            min-height: 100vh;\n"
+"            display: flex;\n"
+"            align-items: center;\n"
+"            justify-content: center;\n"
+"            padding: 20px;\n"
+"            text-align: center;\n"
+"        }\n"
+"        .container {\n"
+"            background: rgba(255, 255, 255, 0.05);\n"
+"            backdrop-filter: blur(16px);\n"
+"            -webkit-backdrop-filter: blur(16px);\n"
+"            border: 1px solid rgba(255, 255, 255, 0.1);\n"
+"            border-radius: 24px;\n"
+"            padding: 40px;\n"
+"            max-width: 400px;\n"
+"            box-shadow: 0 20px 40px rgba(0,0,0,0.3);\n"
+"        }\n"
+"        .icon { font-size: 48px; color: #f87171; margin-bottom: 20px; }\n"
+"        h1 { font-size: 24px; font-weight: 700; margin-bottom: 12px; }\n"
+"        p { color: #94a3b8; font-size: 15px; line-height: 1.6; }\n"
+"        a { color: #38bdf8; text-decoration: none; font-weight: 600; }\n"
+"    </style>\n"
+"</head>\n"
+"<body>\n"
+"    <div class=\"container\">\n"
+"        <div class=\"icon\">✕</div>\n"
+"        <h1>配置保存失败</h1>\n"
+"        <p>设备未能保存 WiFi 信息，请确认 WiFi 名称不超过 32 个字节、密码不超过 64 个字节后重试。</p>\n"
+"        <p style=\"margin-top:16px\"><a href=\"/\">返回重新填写</a></p>\n"
+"    </div>\n"
+"</body>\n"
+"</html>";
+
 static void event_handler(void* arg, esp_event_base_t event_base,
                                 int32_t event_id, void* event_data)
 {
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
-        esp_wifi_connect();
-    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
-        if (s_retry_num < 5) {
+        if (s_sta_connecting) {
             esp_wifi_connect();
+        }
+    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        wifi_event_sta_disconnected_t *disc = (wifi_event_sta_disconnected_t *)event_data;
+        /* AP 配网模式下(或已放弃连接后)收到的残留断开事件必须忽略，
+         * 否则会误增重试计数并向已停止的 STA 发起连接 */
+        if (!s_sta_connecting) {
+            return;
+        }
+        if (s_retry_num < 5) {
             s_retry_num++;
-            ESP_LOGI(TAG, "retry to connect to the AP (%d/5)", s_retry_num);
+            ESP_LOGI(TAG, "retry to connect to the AP (%d/5), reason=%d",
+                     s_retry_num, disc ? disc->reason : -1);
+            esp_wifi_connect();
         } else {
-            ESP_LOGE(TAG, "connect to the AP fail after max retries");
-            xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
+            ESP_LOGE(TAG, "connect to the AP fail after max retries, reason=%d",
+                     disc ? disc->reason : -1);
+            if (s_wifi_event_group) {
+                xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
+            }
         }
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
         ESP_LOGI(TAG, "got ip:" IPSTR, IP2STR(&event->ip_info.ip));
         s_retry_num = 0;
-        xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+        if (s_wifi_event_group) {
+            xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+        }
     }
 }
 
-static void wifi_manager_init_common(void)
+static esp_err_t wifi_manager_init_common(void)
 {
     if (s_wifi_inited) {
-        return;
+        return ESP_OK;
     }
-    s_wifi_event_group = xEventGroupCreate();
-    s_sta_netif = esp_netif_create_default_wifi_sta();
-    s_ap_netif = esp_netif_create_default_wifi_ap();
+
+    if (s_wifi_event_group == NULL) {
+        s_wifi_event_group = xEventGroupCreate();
+        if (s_wifi_event_group == NULL) {
+            ESP_LOGE(TAG, "Failed to create WiFi event group");
+            return ESP_ERR_NO_MEM;
+        }
+    }
+    if (s_sta_netif == NULL) {
+        s_sta_netif = esp_netif_create_default_wifi_sta();
+    }
+    if (s_ap_netif == NULL) {
+        s_ap_netif = esp_netif_create_default_wifi_ap();
+    }
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+    esp_err_t err = esp_wifi_init(&cfg);
+    if (err != ESP_OK) {
+        /* ESP32-P4 通过 ESP-Hosted(SDIO) 使用 C6 射频，硬件/从机固件异常时会失败。
+         * 这里不再 ESP_ERROR_CHECK 直接 abort，避免新板首次上电陷入重启死循环 */
+        ESP_LOGE(TAG, "esp_wifi_init failed: %s", esp_err_to_name(err));
+        return err;
+    }
 
     esp_event_handler_instance_t instance_any_id;
     esp_event_handler_instance_t instance_got_ip;
@@ -266,13 +358,24 @@ static void wifi_manager_init_common(void)
                                                         &event_handler,
                                                         NULL,
                                                         &instance_got_ip));
+
+    /* 只使用本地 NVS(wifi_cfg) 作为唯一配置源；禁止 esp_wifi 把 AP/STA 配置
+     * 持久化到从机 flash，避免重启后残留旧的 AP 配置干扰 STA 连接 */
+    esp_wifi_set_storage(WIFI_STORAGE_RAM);
+
     s_wifi_inited = true;
+    return ESP_OK;
 }
 
-static void url_decode(char *dst, const char *src)
+static void url_decode(char *dst, size_t dst_size, const char *src)
 {
+    if (dst == NULL || dst_size == 0) {
+        return;
+    }
+
+    size_t di = 0;
     char a, b;
-    while (*src) {
+    while (*src && di + 1 < dst_size) {
         if ((*src == '%') &&
             ((a = src[1]) && (b = src[2])) &&
             (isxdigit((unsigned char)a) && isxdigit((unsigned char)b))) {
@@ -282,16 +385,107 @@ static void url_decode(char *dst, const char *src)
             if (b >= 'a') b -= 'a' - 'A';
             if (b >= 'A') b -= ('A' - 10);
             else b -= '0';
-            *dst++ = 16 * a + b;
+            dst[di++] = 16 * a + b;
             src += 3;
         } else if (*src == '+') {
-            *dst++ = ' ';
+            dst[di++] = ' ';
             src++;
         } else {
-            *dst++ = *src++;
+            dst[di++] = *src++;
         }
     }
-    *dst++ = '\0';
+    dst[di] = '\0';
+}
+
+/**
+ * @brief 保存 WiFi 凭据到 NVS，并回读校验。
+ *        任何一步失败都会返回错误，绝不谎报成功。
+ */
+static esp_err_t wifi_manager_save_credentials(const char *ssid, const char *pass)
+{
+    if (ssid == NULL || ssid[0] == '\0') {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (pass == NULL) {
+        pass = "";
+    }
+    if (strlen(ssid) >= WIFI_SSID_BUF_LEN || strlen(pass) >= WIFI_PWD_BUF_LEN) {
+        ESP_LOGE(TAG, "SSID/password too long (ssid=%u bytes, pwd=%u bytes)",
+                 (unsigned)strlen(ssid), (unsigned)strlen(pass));
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(WIFI_NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "nvs_open(%s) failed: %s", WIFI_NVS_NAMESPACE, esp_err_to_name(err));
+        return err;
+    }
+
+    err = nvs_set_str(handle, WIFI_NVS_KEY_SSID, ssid);
+    if (err == ESP_OK) {
+        err = nvs_set_str(handle, WIFI_NVS_KEY_PWD, pass);
+    }
+    if (err == ESP_OK) {
+        err = nvs_commit(handle);
+    }
+    nvs_close(handle);
+
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to write WiFi config to NVS: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    /* 回读校验，确保重启后一定能取到刚才写入的内容 */
+    char chk_ssid[WIFI_SSID_BUF_LEN] = {0};
+    size_t chk_len = sizeof(chk_ssid);
+    err = nvs_open(WIFI_NVS_NAMESPACE, NVS_READONLY, &handle);
+    if (err == ESP_OK) {
+        err = nvs_get_str(handle, WIFI_NVS_KEY_SSID, chk_ssid, &chk_len);
+        nvs_close(handle);
+    }
+    if (err != ESP_OK || strcmp(chk_ssid, ssid) != 0) {
+        ESP_LOGE(TAG, "WiFi config verification failed (err=%s, readback='%s')",
+                 esp_err_to_name(err), chk_ssid);
+        return (err != ESP_OK) ? err : ESP_FAIL;
+    }
+
+    ESP_LOGI(TAG, "WiFi config saved & verified in NVS: SSID='%s'", ssid);
+    return ESP_OK;
+}
+
+/**
+ * @brief 从 NVS 读取 WiFi 凭据。密码键缺失时按空密码处理。
+ */
+static esp_err_t wifi_manager_load_credentials(char *ssid, size_t ssid_size,
+                                               char *pass, size_t pass_size)
+{
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(WIFI_NVS_NAMESPACE, NVS_READONLY, &handle);
+    if (err != ESP_OK) {
+        ESP_LOGI(TAG, "nvs_open(%s) for read: %s", WIFI_NVS_NAMESPACE, esp_err_to_name(err));
+        return err;
+    }
+
+    size_t len = ssid_size;
+    err = nvs_get_str(handle, WIFI_NVS_KEY_SSID, ssid, &len);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Read saved SSID failed: %s (need %u bytes, buffer %u)",
+                 esp_err_to_name(err), (unsigned)len, (unsigned)ssid_size);
+        nvs_close(handle);
+        return err;
+    }
+
+    len = pass_size;
+    esp_err_t pwd_err = nvs_get_str(handle, WIFI_NVS_KEY_PWD, pass, &len);
+    if (pwd_err != ESP_OK) {
+        ESP_LOGW(TAG, "Read saved password failed: %s, assuming open network",
+                 esp_err_to_name(pwd_err));
+        pass[0] = '\0';
+    }
+
+    nvs_close(handle);
+    return ESP_OK;
 }
 
 static void dns_server_task(void *pvParameters)
@@ -436,19 +630,32 @@ static esp_err_t http_404_error_handler(httpd_req_t *req, httpd_err_code_t err)
     return ESP_OK;
 }
 
-static void restart_timer_callback(TimerHandle_t xTimer)
+static void restart_task(void *arg)
 {
-    ESP_LOGI(TAG, "Rebooting device...");
+    /* 留出时间把成功页面发回手机并关闭连接 */
+    vTaskDelay(pdMS_TO_TICKS(2000));
+    ESP_LOGI(TAG, "Rebooting device to apply the new WiFi configuration...");
     esp_restart();
+}
+
+static void schedule_restart(void)
+{
+    if (xTaskCreate(restart_task, "wifi_reboot", 3072, NULL, 5, NULL) != pdPASS) {
+        /* 独立任务都创建不出来时，宁可立刻重启，也不能停在 AP 模式让用户以为已生效 */
+        ESP_LOGE(TAG, "Failed to create restart task, restarting immediately");
+        esp_restart();
+    }
 }
 
 static esp_err_t config_post_handler(httpd_req_t *req)
 {
-    char buf[256];
+    /* SSID/密码经 URL 编码后可能显著变长(如中文 SSID 每字符 9 字节)，缓冲区放宽到 512 */
+    char buf[512];
     int ret, remaining = req->content_len;
 
-    if (remaining >= sizeof(buf)) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Content too long");
+    if (remaining <= 0 || remaining >= (int)sizeof(buf)) {
+        ESP_LOGE(TAG, "Invalid POST content_len=%d", remaining);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid form data");
         return ESP_FAIL;
     }
 
@@ -458,6 +665,7 @@ static esp_err_t config_post_handler(httpd_req_t *req)
             if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
                 continue;
             }
+            ESP_LOGE(TAG, "httpd_req_recv failed: %d", ret);
             return ESP_FAIL;
         }
         remaining -= ret;
@@ -465,39 +673,34 @@ static esp_err_t config_post_handler(httpd_req_t *req)
     }
     buf[pos] = '\0';
 
-    char raw_ssid[64] = {0};
-    char raw_pwd[64] = {0};
+    char raw_ssid[WIFI_SSID_BUF_LEN] = {0};
+    char raw_pwd[WIFI_PWD_BUF_LEN] = {0};
 
-    char *p = strtok(buf, "&");
+    char *save_ptr = NULL;
+    char *p = strtok_r(buf, "&", &save_ptr);
     while (p != NULL) {
         if (strncmp(p, "ssid=", 5) == 0) {
-            url_decode(raw_ssid, p + 5);
+            url_decode(raw_ssid, sizeof(raw_ssid), p + 5);
         } else if (strncmp(p, "pwd=", 4) == 0) {
-            url_decode(raw_pwd, p + 4);
+            url_decode(raw_pwd, sizeof(raw_pwd), p + 4);
         }
-        p = strtok(NULL, "&");
+        p = strtok_r(NULL, "&", &save_ptr);
     }
 
-    ESP_LOGI(TAG, "Received WiFi Configuration: SSID='%s' Password='%s'", raw_ssid, raw_pwd);
+    ESP_LOGI(TAG, "Received WiFi Configuration: SSID='%s' (%u bytes), password length=%u",
+             raw_ssid, (unsigned)strlen(raw_ssid), (unsigned)strlen(raw_pwd));
 
-    nvs_handle_t my_handle;
-    if (nvs_open("wifi_cfg", NVS_READWRITE, &my_handle) == ESP_OK) {
-        nvs_set_str(my_handle, "ssid", raw_ssid);
-        nvs_set_str(my_handle, "pwd", raw_pwd);
-        nvs_commit(my_handle);
-        nvs_close(my_handle);
-        ESP_LOGI(TAG, "WiFi config saved to NVS.");
-    } else {
-        ESP_LOGE(TAG, "Failed to open NVS to save WiFi config.");
+    esp_err_t err = wifi_manager_save_credentials(raw_ssid, raw_pwd);
+    if (err != ESP_OK) {
+        /* 保存失败必须如实告知，不能再返回"配置保存成功" */
+        ESP_LOGE(TAG, "Provisioning failed: %s", esp_err_to_name(err));
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_send(req, failure_html, HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
     }
 
     httpd_resp_send(req, success_html, HTTPD_RESP_USE_STRLEN);
-
-    TimerHandle_t xTimer = xTimerCreate("RebootTimer", pdMS_TO_TICKS(2000), pdFALSE, NULL, restart_timer_callback);
-    if (xTimer != NULL) {
-        xTimerStart(xTimer, 0);
-    }
-
+    schedule_restart();
     return ESP_OK;
 }
 
@@ -539,10 +742,26 @@ void wifi_manager_start_ap(void)
 {
     ESP_LOGI(TAG, "Starting WiFi Provisioning AP Mode...");
 
-    wifi_manager_init_common();
+    if (wifi_manager_init_common() != ESP_OK) {
+        ESP_LOGE(TAG, "WiFi stack not available, cannot start provisioning AP");
+        return;
+    }
 
-    uint8_t mac[6];
-    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    /* 若是 STA 连接失败后回落进来，先彻底停掉 STA，避免残留重连干扰 SoftAP */
+    s_sta_connecting = false;
+    esp_wifi_disconnect();
+    esp_wifi_stop();
+
+    /* ESP32-P4 本身没有 WiFi 射频，射频在 ESP-Hosted 的 C6 从机上，
+     * 因此 esp_read_mac(ESP_MAC_WIFI_STA) 会报 "0 mac type is incorrect (not found)"，
+     * 且不会写入 mac[]，热点名会退化成固定的 TongXiaoDun_0100(读到未初始化数据)，
+     * 多台设备撞名。改用本机 efuse 出厂 MAC，它在 P4 上恒可用且每颗芯片唯一，
+     * 也不依赖 WiFi 的初始化/模式状态。 */
+    uint8_t mac[6] = {0};
+    esp_err_t mac_err = esp_read_mac(mac, ESP_MAC_EFUSE_FACTORY);
+    if (mac_err != ESP_OK) {
+        ESP_LOGW(TAG, "Unable to read a MAC address for the AP SSID: %s", esp_err_to_name(mac_err));
+    }
     char ap_ssid[32];
     snprintf(ap_ssid, sizeof(ap_ssid), "TongXiaoDun_%02X%02X", mac[4], mac[5]);
 
@@ -558,9 +777,17 @@ void wifi_manager_start_ap(void)
 
     ESP_LOGI(TAG, "Configuring SoftAP SSID: %s", ap_ssid);
 
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_config));
-    ESP_ERROR_CHECK(esp_wifi_start());
+    esp_err_t err = esp_wifi_set_mode(WIFI_MODE_AP);
+    if (err == ESP_OK) {
+        err = esp_wifi_set_config(WIFI_IF_AP, &wifi_config);
+    }
+    if (err == ESP_OK) {
+        err = esp_wifi_start();
+    }
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to start SoftAP: %s", esp_err_to_name(err));
+        return;
+    }
 
     if (s_web_server == NULL) {
         s_web_server = start_web_server();
@@ -593,8 +820,16 @@ static void fetch_device_config_task(void *arg)
 
 esp_err_t wifi_manager_join_sta(const char* ssid, const char* pass)
 {
-    wifi_manager_init_common();
-    
+    if (ssid == NULL || ssid[0] == '\0') {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (pass == NULL) {
+        pass = "";
+    }
+    if (wifi_manager_init_common() != ESP_OK) {
+        return ESP_FAIL;
+    }
+
     wifi_config_t wifi_config = {
         .sta = {
             .threshold.authmode = WIFI_AUTH_OPEN,
@@ -603,23 +838,40 @@ esp_err_t wifi_manager_join_sta(const char* ssid, const char* pass)
     strlcpy((char *)wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid));
     strlcpy((char *)wifi_config.sta.password, pass, sizeof(wifi_config.sta.password));
 
+    /* 先停掉旧状态(可能处于 AP 配网模式)，再清零计数/事件位，
+     * 否则 stop 过程中产生的断开事件会吃掉重试次数 */
+    s_sta_connecting = false;
+    esp_wifi_disconnect();
+    esp_wifi_stop();
+
     s_retry_num = 0;
     xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT);
 
-    esp_wifi_disconnect();
-    esp_wifi_stop();
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA) );
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config) );
-    ESP_ERROR_CHECK(esp_wifi_start() );
+    esp_err_t err = esp_wifi_set_mode(WIFI_MODE_STA);
+    if (err == ESP_OK) {
+        err = esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
+    }
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to configure STA: %s", esp_err_to_name(err));
+        return ESP_FAIL;
+    }
+
+    s_sta_connecting = true;   /* 必须在 esp_wifi_start() 之前置位，STA_START 事件才会发起连接 */
+    err = esp_wifi_start();
+    if (err != ESP_OK) {
+        s_sta_connecting = false;
+        ESP_LOGE(TAG, "esp_wifi_start failed: %s", esp_err_to_name(err));
+        return ESP_FAIL;
+    }
 
     EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group,
             WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
             pdFALSE,
             pdFALSE,
-            portMAX_DELAY);
+            pdMS_TO_TICKS(WIFI_CONNECT_TIMEOUT_MS));
 
     if (bits & WIFI_CONNECTED_BIT) {
-        ESP_LOGI(TAG, "connected to ap SSID:%s password:%s. Waiting for internet connectivity...", ssid, pass);
+        ESP_LOGI(TAG, "connected to ap SSID:%s. Waiting for internet connectivity...", ssid);
 
         // Wait for actual internet connectivity by resolving the backend host
         struct addrinfo hints;
@@ -651,22 +903,19 @@ esp_err_t wifi_manager_join_sta(const char* ssid, const char* pass)
             return ESP_FAIL;
         }
 
-        nvs_handle_t my_handle;
-        if (nvs_open("wifi_cfg", NVS_READWRITE, &my_handle) == ESP_OK) {
-            nvs_set_str(my_handle, "ssid", ssid);
-            nvs_set_str(my_handle, "pwd", pass);
-            nvs_commit(my_handle);
-            nvs_close(my_handle);
-            ESP_LOGI(TAG, "WiFi credentials saved successfully to NVS");
-        } else {
-            ESP_LOGE(TAG, "Failed to open NVS to save WiFi credentials");
+        if (wifi_manager_save_credentials(ssid, pass) != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to persist WiFi credentials to NVS");
         }
         return ESP_OK;
-    } else if (bits & WIFI_FAIL_BIT) {
-        ESP_LOGI(TAG, "Failed to connect to SSID:%s, password:%s", ssid, pass);
-        play_local_voice(PATH_V_NET_ERR, TEXT_V_NET_ERR);
-        return ESP_FAIL;
     }
+
+    s_sta_connecting = false;
+    if (bits & WIFI_FAIL_BIT) {
+        ESP_LOGE(TAG, "Failed to connect to SSID:%s (check SSID/password)", ssid);
+    } else {
+        ESP_LOGE(TAG, "Connecting to SSID:%s timed out after %d ms", ssid, WIFI_CONNECT_TIMEOUT_MS);
+    }
+    play_local_voice(PATH_V_NET_ERR, TEXT_V_NET_ERR);
     return ESP_FAIL;
 }
 
@@ -674,20 +923,11 @@ static void wifi_autoconnect_task(void *pvParameters)
 {
     play_local_voice(PATH_V_SYS_START, TEXT_V_SYS_START);
 
-    char ssid[32] = {0};
-    char password[64] = {0};
-    size_t ssid_len = sizeof(ssid);
-    size_t pwd_len = sizeof(password);
+    char ssid[WIFI_SSID_BUF_LEN] = {0};
+    char password[WIFI_PWD_BUF_LEN] = {0};
 
-    nvs_handle_t my_handle;
-    esp_err_t err = nvs_open("wifi_cfg", NVS_READONLY, &my_handle);
-    if (err == ESP_OK) {
-        err = nvs_get_str(my_handle, "ssid", ssid, &ssid_len);
-        if (err == ESP_OK) {
-            err = nvs_get_str(my_handle, "pwd", password, &pwd_len);
-        }
-        nvs_close(my_handle);
-    }
+    esp_err_t err = wifi_manager_load_credentials(ssid, sizeof(ssid),
+                                                  password, sizeof(password));
 
     if (err == ESP_OK && strlen(ssid) > 0) {
         ESP_LOGI(TAG, "Auto-connecting to saved WiFi: SSID=%s", ssid);
