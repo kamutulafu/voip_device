@@ -26,9 +26,9 @@ static const char *TAG = "audio_driver";
 #define I2S_NUM                 0
 #define I2S_MCK_IO              I2S_GPIO_UNUSED /* ES8311 3-Wire 模式（完全无需 MCK 引脚，由 BCK 自供给内部主时钟） */
 #define I2S_BCK_IO              21      /* 位时钟 BCK -> GPIO 21 (32bit slot: 16k*32*2 = 1.024MHz) */
-#define I2S_WS_IO               24      /* 帧时钟 WS -> GPIO 24 */
+#define I2S_WS_IO               20      /* 帧时钟 WS -> GPIO 20 (避开 USB-OTG GPIO 24) */
 #define I2S_DO_IO               33      /* ESP32 DOUT -> 芯片 DI (SDIN/扬声器播放数据) */
-#define I2S_DI_IO               25      /* ESP32 DIN  -> 芯片 DO (SDOUT/麦克风录音数据) */
+#define I2S_DI_IO               22      /* ESP32 DIN  -> 芯片 DO (SDOUT/麦克风录音数据，避开 USB-OTG GPIO 25) */
 
 #define AUDIO_SAMPLE_RATE       16000   /* 16 kHz 语音通讯标准模式 */
 #define AUDIO_MCLK_MULTIPLE     256     /* 256x Fs = 4.096 MHz (较低辐射、边沿干净的方波) */
@@ -272,27 +272,25 @@ esp_err_t audio_init(void)
         gpio_set_level(GPIO_OUTPUT_PA, 1); // Enable PA
     }
 
-    // 2. Initialize I2C Bus & Add ES8311 device
-    i2c_master_bus_handle_t i2c_bus = uvc_get_i2c_bus_handle();
-    if (i2c_bus == NULL) {
-        ESP_LOGI(TAG, "Initializing I2C Master Bus (SDA=2, SCL=3) for Audio...");
+    // 2. Initialize dedicated I2C Bus for Audio (SDA=2, SCL=3, I2C Port 1)
+    static i2c_master_bus_handle_t s_audio_i2c_bus = NULL;
+    if (s_audio_i2c_bus == NULL) {
+        ESP_LOGI(TAG, "Initializing dedicated I2C Master Bus (SDA=2, SCL=3, Port 1) for Audio...");
         i2c_master_bus_config_t i2c_bus_cfg = {
             .clk_source = I2C_CLK_SRC_DEFAULT,
-            .i2c_port = 0,
+            .i2c_port = 1,
             .scl_io_num = 3,
             .sda_io_num = 2,
             .glitch_ignore_cnt = 7,
             .flags.enable_internal_pullup = true,
         };
-        esp_err_t err = i2c_new_master_bus(&i2c_bus_cfg, &i2c_bus);
+        esp_err_t err = i2c_new_master_bus(&i2c_bus_cfg, &s_audio_i2c_bus);
         if (err != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to create I2C bus: %s", esp_err_to_name(err));
+            ESP_LOGE(TAG, "Failed to create Audio I2C bus: %s", esp_err_to_name(err));
             return err;
         }
-        uvc_set_i2c_bus_handle(i2c_bus);
-    } else {
-        ESP_LOGI(TAG, "Sharing I2C Master Bus from UVC...");
     }
+    i2c_master_bus_handle_t i2c_bus = s_audio_i2c_bus;
 
     i2c_device_config_t dev_cfg = {
         .dev_addr_length = I2C_ADDR_BIT_LEN_7,

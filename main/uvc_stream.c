@@ -471,12 +471,12 @@ esp_err_t camera_ensure_video_init(void)
     }
 
     if (g_i2c_bus_handle == NULL) {
-        ESP_LOGI(TAG, "Initializing I2C Master Bus (SDA=2, SCL=3) for camera...");
+        ESP_LOGI(TAG, "Initializing I2C Master Bus (SDA=7, SCL=8) for camera...");
         i2c_master_bus_config_t i2c_bus_cfg = {
             .clk_source = I2C_CLK_SRC_DEFAULT,
             .i2c_port = 0,
-            .scl_io_num = 3,
-            .sda_io_num = 2,
+            .scl_io_num = 8,
+            .sda_io_num = 7,
             .glitch_ignore_cnt = 7,
             .flags.enable_internal_pullup = true,
         };
@@ -492,7 +492,7 @@ esp_err_t camera_ensure_video_init(void)
         .sccb_config = {
             .init_sccb = false,
             .i2c_handle = g_i2c_bus_handle,
-            .freq = 20000,
+            .freq = 100000,
         },
         .reset_pin = -1,
         .pwdn_pin = -1,
