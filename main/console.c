@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdbool.h>
+#include <time.h>
 #include "esp_log.h"
 #include "esp_console.h"
 #include "console.h"
@@ -12,6 +13,66 @@ static bool s_initialized = false;
 bool console_is_enabled(void)
 {
     return s_initialized && (s_repl != NULL);
+}
+
+#include <sys/time.h>
+
+int cmd_date(int argc, char **argv)
+{
+    if (argc >= 2) {
+        time_t new_sec = 0;
+        if (argc == 2 && strchr(argv[1], '-') == NULL && strchr(argv[1], ':') == NULL) {
+            // Raw timestamp (e.g. date 1785000000)
+            new_sec = (time_t)atoll(argv[1]);
+        } else {
+            // String format (e.g. date "2026-07-27 13:23:00" or date 2026-07-27 13:23:00)
+            int year = 0, mon = 0, mday = 0, hour = 0, min = 0, sec = 0;
+            char combined[64] = {0};
+            if (argc >= 3) {
+                snprintf(combined, sizeof(combined), "%s %s", argv[1], argv[2]);
+            } else {
+                snprintf(combined, sizeof(combined), "%s", argv[1]);
+            }
+
+            if (sscanf(combined, "%d-%d-%d %d:%d:%d", &year, &mon, &mday, &hour, &min, &sec) == 6) {
+                struct tm tm_set = {
+                    .tm_year = year - 1900,
+                    .tm_mon  = mon - 1,
+                    .tm_mday = mday,
+                    .tm_hour = hour,
+                    .tm_min  = min,
+                    .tm_sec  = sec,
+                };
+                setenv("TZ", "UTC0", 1);
+                tzset();
+                new_sec = mktime(&tm_set);
+            }
+        }
+
+        if (new_sec > 0) {
+            struct timeval tv = { .tv_sec = new_sec, .tv_usec = 0 };
+            if (settimeofday(&tv, NULL) == 0) {
+                printf("RTC system time updated successfully!\n");
+            } else {
+                printf("Failed to set RTC time via settimeofday()\n");
+                return 1;
+            }
+        } else {
+            printf("Usage: date [epoch_seconds | \"YYYY-MM-DD HH:MM:SS\"]\n");
+            return 1;
+        }
+    }
+
+    time_t now = time(NULL);
+    struct tm tm_now;
+    gmtime_r(&now, &tm_now);
+
+    char buf[64];
+    strftime(buf, sizeof(buf), "%a, %d %b %Y %H:%M:%S GMT", &tm_now);
+
+    printf("Current system RTC time (UTC): %s\n", buf);
+    printf("Raw epoch seconds: %lld\n", (long long)now);
+    return 0;
 }
 
 esp_err_t console_init(void)

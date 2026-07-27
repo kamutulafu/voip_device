@@ -14,7 +14,6 @@
 #include "esp_timer.h"
 #include "esp_websocket_client.h"
 #include "esp_crt_bundle.h"
-#include "esp_netif_sntp.h"
 #include "wifi_manager.h"
 
 #include "mbedtls/md.h"
@@ -322,31 +321,7 @@ static esp_err_t send_audio_frame(esp_websocket_client_handle_t client, int stat
 
 static esp_err_t ensure_time_synced(void)
 {
-    time_t now = time(NULL);
-    struct tm tm_now;
-    localtime_r(&now, &tm_now);
-    if (tm_now.tm_year >= (2024 - 1900)) {
-        return ESP_OK; /* already synced */
-    }
-
-    if (!wifi_manager_is_connected()) {
-        ESP_LOGW(TAG, "WiFi not connected, skipping SNTP sync");
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    ESP_LOGI(TAG, "Synchronizing time via SNTP...");
-    esp_sntp_config_t config = ESP_NETIF_SNTP_DEFAULT_CONFIG("ntp.aliyun.com");
-    esp_err_t err = esp_netif_sntp_init(&config);
-    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-        return err;
-    }
-    err = esp_netif_sntp_sync_wait(pdMS_TO_TICKS(10000));
-    esp_netif_sntp_deinit();
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "SNTP sync failed: %s", esp_err_to_name(err));
-        return err;
-    }
-    return ESP_OK;
+    return ESP_OK; /* Hardware RTC is maintained by RTC backup battery */
 }
 
 /* ----- public API ------------------------------------------------------ */

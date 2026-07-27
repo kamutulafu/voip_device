@@ -38,6 +38,11 @@ esp_err_t console_start(void);
  */
 bool console_is_enabled(void);
 
+/**
+ * @brief Console command: print current RTC system date/time
+ */
+int cmd_date(int argc, char **argv);
+
 #ifdef __cplusplus
 }
 #endif

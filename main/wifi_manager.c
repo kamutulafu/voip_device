@@ -21,7 +21,6 @@
 #include "lwip/netdb.h"
 #include "wifi_manager.h"
 #include "dialogue.h"
-#include "time_sync.h"
 #include "api_service.h"
 #include "device_config.h"
 #include "voice_flow.h"
@@ -800,7 +799,7 @@ void wifi_manager_start_ap(void)
 
 static void fetch_device_config_task(void *arg)
 {
-    /* 稍作等待 (例如 500ms)，让 time_sync_start 优先完成校时，避免时间未校准时 TLS 握手异常 */
+    /* 稍作等待 (例如 500ms)，让网络层进一步平稳后再发起配置获取 */
     vTaskDelay(pdMS_TO_TICKS(500));
     ESP_LOGI(TAG, "Fetching device config automatically after internet connection...");
     api_result_t *res = api_get_device_config(DEVICE_ID, 1);
@@ -894,7 +893,6 @@ esp_err_t wifi_manager_join_sta(const char* ssid, const char* pass)
 
         if (internet_ok) {
             ESP_LOGI(TAG, "Internet connectivity verified successfully! Network is fully accessible.");
-            time_sync_start(); // 联网确认可用后，异步"蹭"一次HTTP Date响应头校准系统时间
             xTaskCreate(fetch_device_config_task, "fetch_dev_cfg", 8192, NULL, 5, NULL); // 自动异步获取设备配置更新 use_type (HTTPS+RSA加密需8KB栈空间)
             play_local_voice(PATH_V_NET_OK, TEXT_V_NET_OK);
         } else {
