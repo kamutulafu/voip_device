@@ -14,6 +14,7 @@
 #include "voice_flow.h"
 #include "dialogue.h"
 #include "voice_intent.h"
+#include "wifi_manager.h"
 
 #include "api_service.h"
 #include "api_crypto.h"
@@ -48,8 +49,9 @@
 static const char *TAG = "voice_flow";
 
 /* ---- tunables ---------------------------------------------------------- */
-#define LISTEN_RECORD_SEC       6      /* recording window per listen attempt   */
-#define MAX_ASR_RETRY           3      /* 1.4 ask_retry maximum attempts        */
+#define LISTEN_RECORD_SEC       6      /* default recording window per listen attempt */
+#define MAX_ASR_RETRY           2      /* 1 initial + 1 retry maximum attempts */
+#define MENU_MAX_ATTEMPTS       3      /* how many times the menu re-asks on a non-understood reply */
 #define MAX_CONTACTS            8
 #define MAX_MSGS                16
 #define FACE_IMG_PATH           "/spiffs/face.jpg"
@@ -165,11 +167,11 @@ static int json_int(cJSON *obj, const char *key, int dflt)
 
 /* ---- listening --------------------------------------------------------- */
 
-/* Record one window and recognize. Returns true when non-empty text obtained. */
-static bool listen_once(char *out, size_t sz)
+/* Record one window and recognize with dynamic timeout. Returns true when non-empty text obtained. */
+static bool listen_once_sec(char *out, size_t sz, uint32_t record_sec)
 {
     out[0] = '\0';
-    esp_err_t err = asr_xfyun_record_and_recognize_stream(LISTEN_RECORD_SEC, out, sz, NULL, NULL);
+    esp_err_t err = asr_xfyun_record_and_recognize_stream(record_sec, out, sz, NULL, NULL);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "Streaming ASR failed: %s", esp_err_to_name(err));
         return false;
@@ -178,19 +180,24 @@ static bool listen_once(char *out, size_t sz)
     return !voice_text_is_empty(out);
 }
 
-/* Listen with the 1.4 retry template. Returns true on success; on false the
- * caller should play the 1.3 timeout farewell. */
-static bool listen_with_retry(char *out, size_t sz)
+/* Listen with dynamic timeout and maximum 1 retry. Returns true on success;
+ * on false (after 2 attempts), the caller should play the timeout farewell. */
+static bool listen_with_retry_sec(char *out, size_t sz, uint32_t record_sec)
 {
-    for (int attempt = 0; attempt < MAX_ASR_RETRY; attempt++) {
-        if (listen_once(out, sz)) {
+    for (int attempt = 0; attempt < 2; attempt++) {
+        if (listen_once_sec(out, sz, record_sec)) {
             return true;
         }
-        if (attempt < MAX_ASR_RETRY - 1) {
+        if (attempt == 0) {
             dialogue_ask_retry();
         }
     }
     return false;
+}
+
+static bool listen_with_retry(char *out, size_t sz)
+{
+    return listen_with_retry_sec(out, sz, LISTEN_RECORD_SEC);
 }
 
 static void voice_flow_timeout_exit(session_t *s)
@@ -812,32 +819,50 @@ static void handle_call(session_t *s, const char *heard)
 
 static void handle_menu(session_t *s, bool restricted)
 {
-    char text[256];
-    if (!listen_with_retry(text, sizeof(text))) {
-        voice_flow_timeout_exit(s);
-        return;
-    }
-
-    voice_intent_t it = voice_intent_parse(text);
-
-    if (restricted) {
-        /* Unrecognized child: only the public-service message feature. */
-        if (it == INTENT_SEND_MSG) {
-            handle_send_msg(s);
-        } else {
-            dialogue_speak("这个功能需要家长开通哦，您可以说发留言使用公益服务");
+    /* 关键：听不懂时不能直接结束会话跳到"拜拜"。误识别(如回声把"over"识别成
+     * "It is over.")会得到一个非空但无意义的结果，之前会被当成"已听到但不认识"
+     * 而立刻收尾，孩子根本没有第二次开口的机会。这里改成重新提示并再听一次，
+     * 只有连续多次都听不懂(或始终没说话)才真正退出。 */
+    for (int attempt = 0; attempt < MENU_MAX_ATTEMPTS; attempt++) {
+        char text[256];
+        if (!listen_with_retry(text, sizeof(text))) {
+            /* 连续两次都没听到声音 -> 超时告别 */
+            voice_flow_timeout_exit(s);
+            return;
         }
-        return;
+
+        voice_intent_t it = voice_intent_parse(text);
+
+        if (restricted) {
+            /* Unrecognized child: only the public-service message feature. */
+            if (it == INTENT_SEND_MSG) {
+                handle_send_msg(s);
+                return;
+            }
+            if (attempt + 1 < MENU_MAX_ATTEMPTS) {
+                dialogue_speak("这个功能需要家长开通哦，您可以说发留言使用公益服务，说完请说over");
+                continue;
+            }
+            dialogue_speak("这个功能需要家长开通哦，您可以说发留言使用公益服务");
+            voice_flow_timeout_exit(s);
+            return;
+        }
+
+        switch (it) {
+        case INTENT_SEND_MSG:   handle_send_msg(s);   return;
+        case INTENT_CALL:       handle_call(s, text); return;
+        case INTENT_ADD_FRIEND: handle_add_friend(s); return;
+        default:
+            /* 没听懂：再提示一次功能选项并回到循环顶部继续听 */
+            if (attempt + 1 < MENU_MAX_ATTEMPTS) {
+                dialogue_speak("我没有听懂哦，您可以说发留言、打电话或者加好友，说完请说over");
+            }
+            break;
+        }
     }
 
-    switch (it) {
-    case INTENT_SEND_MSG:  handle_send_msg(s);      break;
-    case INTENT_CALL:      handle_call(s, text);    break;
-    case INTENT_ADD_FRIEND:handle_add_friend(s);    break;
-    default:
-        dialogue_speak("我没有听懂哦，您可以说发留言、打电话或者加好友");
-        break;
-    }
+    /* 多次都没听懂，礼貌收尾 */
+    voice_flow_timeout_exit(s);
 }
 
 /* ---- session keep-alive task ------------------------------------------ */
@@ -1186,6 +1211,12 @@ void voice_flow_wake(void)
         } else {
             play_local_voice(PATH_V_GOODBYE, TEXT_V_GOODBYE);
         }
+        return;
+    }
+
+    if (!wifi_manager_is_connected()) {
+        ESP_LOGW(TAG, "Wake button pressed, but device has no WiFi connection.");
+        play_local_voice(PATH_V_NET_OFFLINE, TEXT_V_NET_OFFLINE);
         return;
     }
 

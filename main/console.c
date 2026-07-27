@@ -1,10 +1,12 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
 #include <time.h>
 #include "esp_log.h"
 #include "esp_console.h"
 #include "console.h"
+#include "app_time.h"
 
 static const char *TAG = "console";
 static esp_console_repl_t *s_repl = NULL;
@@ -43,8 +45,9 @@ int cmd_date(int argc, char **argv)
                     .tm_min  = min,
                     .tm_sec  = sec,
                 };
-                setenv("TZ", "UTC0", 1);
-                tzset();
+                /* 按已配置的本地时区解释输入，绝不能在这里 setenv("TZ","UTC0")：
+                 * 那会把全局时区改成 UTC，之后所有 localtime() 都跟着偏。 */
+                tm_set.tm_isdst = -1;
                 new_sec = mktime(&tm_set);
             }
         }
@@ -70,6 +73,10 @@ int cmd_date(int argc, char **argv)
     char buf[64];
     strftime(buf, sizeof(buf), "%a, %d %b %Y %H:%M:%S GMT", &tm_now);
 
+    char local[32];
+    app_time_local_str(local, sizeof(local));
+
+    printf("Current local time: %s (TZ=%s)\n", local, getenv("TZ") ? getenv("TZ") : "UTC");
     printf("Current system RTC time (UTC): %s\n", buf);
     printf("Raw epoch seconds: %lld\n", (long long)now);
     return 0;

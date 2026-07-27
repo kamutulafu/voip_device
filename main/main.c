@@ -6,9 +6,11 @@
 #include "esp_netif.h"
 
 #include "app_build.h"
+#include "app_time.h"
 #include "spiffs_storage.h"
 #include "voice_flow.h"
 #include "wifi_manager.h"
+#include "dialogue.h"
 
 #if APP_BUILD_DEBUG
 #include "console.h"
@@ -19,8 +21,6 @@
 #include "tts_xfyun.h"
 #include "voip_client.h"
 #include "api_test.h"
-
-#include "dialogue.h"
 
 int cmd_zmodem_send(int argc, char **argv);
 int cmd_zmodem_recv(int argc, char **argv);
@@ -200,7 +200,7 @@ static void register_debug_console_commands(void)
     // Register date command (print or set hardware RTC system time)
     const esp_console_cmd_t cmd_date_cfg = {
         .command = "date",
-        .help = "Print or set current system RTC time (UTC)",
+        .help = "Print or set system RTC time (string form is local time)",
         .hint = "[epoch_seconds | \"YYYY-MM-DD HH:MM:SS\"]",
         .func = &cmd_date,
     };
@@ -217,6 +217,9 @@ void app_main(void)
         ret = nvs_flash_init();
     }
     ESP_ERROR_CHECK(ret);
+
+    // Apply the saved timezone before anything formats a timestamp
+    app_time_init();
 
     // Initialize Netif and Default Event Loop
     ESP_ERROR_CHECK(esp_netif_init());
@@ -236,7 +239,9 @@ void app_main(void)
     // Voice subsystem + GPIO45 wake button (both Debug and Release)
     ESP_ERROR_CHECK(voice_flow_init());
 
-    // Trigger auto-connection to saved WiFi in background
+    // Trigger auto-connection to saved WiFi in background.
+    // 该任务负责开机播报("系统启动成功，正在检查网络")、连接、以及连接结果播报
+    // (网络连接成功/失败)，无需再另起 boot_net_check_task 重复播报同类语音。
     wifi_manager_start_autoconnect();
 
 #if APP_BUILD_DEBUG

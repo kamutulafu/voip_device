@@ -354,15 +354,16 @@ int cmd_voice_update(int argc, char **argv)
         const char *path;
         const char *desc;
     } voices[] = {
-        { TEXT_V_SYS_START, PATH_V_SYS_START, "1. 系统启动成功，正在检查网络" },
-        { TEXT_V_NET_OK,    PATH_V_NET_OK,    "2. 网络连接成功" },
-        { TEXT_V_NET_ERR,   PATH_V_NET_ERR,   "3. 网络连接失败" },
-        { TEXT_V_SYS_ERR,   PATH_V_SYS_ERR,   "4. 哎呀，系统开小差了" },
-        { TEXT_V_FACE_FAIL, PATH_V_FACE_FAIL, "5. 未识别到人脸" },
-        { TEXT_V_NO_RESP,   PATH_V_NO_RESP,   "6. 你好像不在这里，下次再找我吧，拜拜" },
-        { TEXT_V_GREETING,  PATH_V_GREETING,  "7. 问候与倒计时" },
-        { TEXT_V_GOODBYE,   PATH_V_GOODBYE,   "8. 好的，有需要再找我，拜拜" },
-        { TEXT_V_CALL_END,  PATH_V_CALL_END,  "9. 通话已结束" }
+        { TEXT_V_BOOT_START,  PATH_V_BOOT_START,  "1. 设备启动成功，正在检查网络" },
+        { TEXT_V_NET_OK,      PATH_V_NET_OK,      "2. 网络连接成功" },
+        { TEXT_V_NET_ERR,     PATH_V_NET_ERR,     "3. 网络连接失败" },
+        { TEXT_V_NET_OFFLINE, PATH_V_NET_OFFLINE, "4. 抱歉，我现在没有网络，请稍后使用，再见" },
+        { TEXT_V_SYS_ERR,     PATH_V_SYS_ERR,     "5. 哎呀，系统开小差了" },
+        { TEXT_V_FACE_FAIL,   PATH_V_FACE_FAIL,   "6. 未识别到人脸" },
+        { TEXT_V_NO_RESP,     PATH_V_NO_RESP,     "7. 你好像没有说话，我先溜了哦，拜拜" },
+        { TEXT_V_GREETING,    PATH_V_GREETING,    "8. 问候与倒计时" },
+        { TEXT_V_GOODBYE,     PATH_V_GOODBYE,     "9. 好的，有需要再找我，拜拜" },
+        { TEXT_V_CALL_END,    PATH_V_CALL_END,    "10. 通话已结束" }
     };
 
     const int total_voices = sizeof(voices) / sizeof(voices[0]);

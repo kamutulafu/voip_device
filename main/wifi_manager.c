@@ -1,6 +1,8 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <limits.h>
 #include "sdkconfig.h"
 #include "esp_err.h"
 #include "esp_log.h"
@@ -27,6 +29,7 @@
 #include "device_config.h"
 #include "voice_flow.h"
 #include "audio_driver.h"
+#include "app_time.h"
 
 static const char *TAG = "wifi_manager";
 
@@ -175,8 +178,9 @@ static const char *setup_html =
 "    <div class=\"container\">\n"
 "        <div class=\"logo\">童小盾</div>\n"
 "        <div class=\"subtitle\">配置设备 WiFi 连接</div>\n"
-"        <form action=\"/config\" method=\"POST\">\n"
+"        <form id=\"cfgForm\" action=\"/config\" method=\"POST\">\n"
 "            <input type=\"hidden\" id=\"timestamp\" name=\"timestamp\" value=\"0\">\n"
+"            <input type=\"hidden\" id=\"tz\" name=\"tz\" value=\"480\">\n"
 "            <div class=\"form-group\">\n"
 "                <label for=\"ssid\">WiFi 网络名称 (SSID)</label>\n"
 "                <input type=\"text\" id=\"ssid\" name=\"ssid\" placeholder=\"请输入 WiFi 名称\" required autocomplete=\"off\">\n"
@@ -192,7 +196,13 @@ static const char *setup_html =
 "            <button type=\"submit\">保存并连接</button>\n"
 "        </form>\n"
 "        <script>\n"
-"            document.getElementById('timestamp').value = Math.floor(Date.now() / 1000);\n"
+"            function stampNow() {\n"
+"                document.getElementById('timestamp').value = Math.floor(Date.now() / 1000);\n"
+"                document.getElementById('tz').value = -new Date().getTimezoneOffset();\n"
+"            }\n"
+"            stampNow();\n"
+"            /* 提交前再取一次：否则填表花掉的时间会全部变成时钟误差 */\n"
+"            document.getElementById('cfgForm').addEventListener('submit', stampNow);\n"
 "        </script>\n"
 "        <div class=\"footer\">童小盾 系统 &copy; 2026</div>\n"
 "    </div>\n"
@@ -687,6 +697,7 @@ static esp_err_t config_post_handler(httpd_req_t *req)
     char raw_pwd[WIFI_PWD_BUF_LEN] = {0};
     int vol_val = -1;
     int64_t ts_val = 0;
+    int tz_val = INT_MIN;   /* 手机所在时区相对 UTC 的分钟数，东为正 */
 
     char *save_ptr = NULL;
     char *p = strtok_r(buf, "&", &save_ptr);
@@ -703,20 +714,34 @@ static esp_err_t config_post_handler(httpd_req_t *req)
             if (p[10] != '\0') {
                 ts_val = atoll(p + 10);
             }
+        } else if (strncmp(p, "tz=", 3) == 0) {
+            if (p[3] != '\0') {
+                tz_val = atoi(p + 3);
+            }
         }
         p = strtok_r(NULL, "&", &save_ptr);
     }
 
     if (vol_val >= 0 && vol_val <= 100) {
-        audio_set_volume((uint8_t)vol_val);
-        ESP_LOGI(TAG, "AP Mode: Speaker initial volume set to %d%% and saved to NVS", vol_val);
+        /* 走 audio_store_volume(): 配网时音频通路通常还没起来，
+         * 这里只需把用户的选择落到 NVS，重启后 audio_init() 自然会用上，
+         * 不能因为 ES8311 还没初始化就把设置丢掉。 */
+        esp_err_t verr = audio_store_volume((uint8_t)vol_val);
+        if (verr == ESP_OK) {
+            ESP_LOGI(TAG, "AP Mode: Speaker initial volume set to %d%% and saved to NVS", vol_val);
+        } else {
+            ESP_LOGE(TAG, "AP Mode: Failed to save volume %d%%: %s", vol_val, esp_err_to_name(verr));
+        }
     }
 
-    if (ts_val > 1700000000) { // Valid timestamp (> 2024)
-        struct timeval tv = { .tv_sec = (time_t)ts_val, .tv_usec = 0 };
-        if (settimeofday(&tv, NULL) == 0) {
-            ESP_LOGI(TAG, "AP Mode: System RTC time updated to timestamp %lld via phone/browser", (long long)ts_val);
-        }
+    /* 时区必须先于时间戳落地：app_time_set_epoch() 打印的本地时间要用新时区 */
+    if (tz_val != INT_MIN) {
+        (void)app_time_set_utc_offset_minutes(tz_val);
+    }
+
+    if (ts_val > 0) {
+        /* 浏览器给的是 UTC 纪元秒，系统时钟统一存 UTC，显示时由时区换算 */
+        (void)app_time_set_epoch(ts_val);
     }
 
     ESP_LOGI(TAG, "Received WiFi Configuration: SSID='%s' (%u bytes), password length=%u",

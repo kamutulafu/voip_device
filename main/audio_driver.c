@@ -49,6 +49,8 @@ static i2s_chan_handle_t rx_handle = NULL;
 static bool s_audio_initialized = false;
 static bool s_shutdown_handler_registered = false;
 static uint8_t s_current_volume = AUDIO_DEFAULT_VOLUME;
+/* s_current_volume 在第一次被读取时才从 NVS 载入，见 audio_volume_pref() */
+static bool s_volume_loaded = false;
 static volatile bool s_play_abort_flag = false;
 
 void audio_play_abort(void)
@@ -67,6 +69,33 @@ static uint8_t audio_load_saved_volume(void)
         nvs_close(handle);
     }
     return vol;
+}
+
+/* 返回当前音量偏好，首次调用时从 NVS 补齐。
+ * 不能等到 audio_init() 才读 NVS：开机第一段语音会先调用 audio_get_volume()，
+ * 那时 s_current_volume 还是编译期默认值，导致第一句用默认音量播放。 */
+static uint8_t audio_volume_pref(void)
+{
+    if (!s_volume_loaded) {
+        s_current_volume = audio_load_saved_volume();
+        s_volume_loaded = true;
+    }
+    return s_current_volume;
+}
+
+static esp_err_t audio_save_volume_nvs(uint8_t volume)
+{
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(AUDIO_NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (err != ESP_OK) {
+        return err;
+    }
+    err = nvs_set_u8(handle, AUDIO_NVS_KEY_VOL, volume);
+    if (err == ESP_OK) {
+        err = nvs_commit(handle);
+    }
+    nvs_close(handle);
+    return err;
 }
 
 void audio_play_clear_abort(void)
@@ -188,7 +217,7 @@ static esp_err_t es8311_init_internal(void)
      * 再由 es8311_enable_output() 解除静音，避免第一段语音落在建立期里出现沙哑失真。 */
     ret |= es8311_write_reg(ES8311_REG_DAC_MUTE, ES8311_DAC_MUTE_BITS);
     {
-        uint8_t vol = audio_load_saved_volume();
+        uint8_t vol = audio_volume_pref();
         if (vol > 100) {
             vol = 100;
         }
@@ -1187,18 +1216,9 @@ int cmd_audio_record(int argc, char **argv)
     return 0;
 }
 
-esp_err_t audio_set_volume(uint8_t volume)
+/* 只把音量下发到 ES8311，不碰持久化 */
+static esp_err_t audio_apply_volume_to_codec(uint8_t volume)
 {
-    if (!s_audio_initialized) {
-        esp_err_t err = audio_init();
-        if (err != ESP_OK) {
-            return err;
-        }
-    }
-    if (volume > 100) {
-        volume = 100;
-    }
-
     /* Keep PA enabled whenever we raise playback level.
      * 外接模组的 PA-EN 硬件常开，GPIO_OUTPUT_PA = -1，必须判断后再调用，
      * 否则 gpio_set_level(-1) 会打印 "GPIO output gpio_num error"。 */
@@ -1215,22 +1235,60 @@ esp_err_t audio_set_volume(uint8_t volume)
     uint8_t reg_val = (volume == 0) ? 0 : (uint8_t)((volume * 256 / 100) - 1);
     err = es8311_write_reg(ES8311_REG_DAC_VOLUME, reg_val);
     if (err == ESP_OK) {
-        s_current_volume = volume;
         ESP_LOGI(TAG, "Speaker volume -> %u%% (DAC reg 0x32=0x%02X)",
                  (unsigned)volume, reg_val);
-        nvs_handle_t handle;
-        if (nvs_open(AUDIO_NVS_NAMESPACE, NVS_READWRITE, &handle) == ESP_OK) {
-            nvs_set_u8(handle, AUDIO_NVS_KEY_VOL, volume);
-            nvs_commit(handle);
-            nvs_close(handle);
-        }
     }
     return err;
 }
 
+esp_err_t audio_store_volume(uint8_t volume)
+{
+    if (volume > 100) {
+        volume = 100;
+    }
+
+    /* 先落 NVS：配网页面设置音量时 ES8311 往往还没初始化，
+     * 若等 I2C 写成功才保存，用户的设置会被静默丢弃。 */
+    esp_err_t err = audio_save_volume_nvs(volume);
+    s_current_volume = volume;
+
+    /* 硬件已经起来就顺手生效；没起来也无所谓，下次 audio_init() 会从 NVS 读回。 */
+    if (s_audio_initialized) {
+        (void)audio_apply_volume_to_codec(volume);
+    }
+    return err;
+}
+
+esp_err_t audio_set_volume(uint8_t volume)
+{
+    if (volume > 100) {
+        volume = 100;
+    }
+
+    /* 持久化与硬件下发解耦，避免 codec 出错时把用户设置一起丢掉。
+     * NVS 对相同值的写入会自行跳过，不会产生额外擦写。 */
+    if (volume != s_current_volume) {
+        esp_err_t serr = audio_save_volume_nvs(volume);
+        if (serr != ESP_OK) {
+            ESP_LOGW(TAG, "Failed to persist volume %u%%: %s",
+                     (unsigned)volume, esp_err_to_name(serr));
+        }
+        s_current_volume = volume;
+    }
+
+    if (!s_audio_initialized) {
+        esp_err_t err = audio_init();
+        if (err != ESP_OK) {
+            return err;
+        }
+    }
+
+    return audio_apply_volume_to_codec(volume);
+}
+
 uint8_t audio_get_volume(void)
 {
-    return s_current_volume;
+    return audio_volume_pref();
 }
 
 int cmd_set_volume(int argc, char **argv)

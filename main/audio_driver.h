@@ -120,6 +120,17 @@ esp_err_t audio_play_from_mem(const uint8_t *buf, size_t len);
 esp_err_t audio_set_volume(uint8_t volume);
 
 /**
+ * @brief 持久化扬声器音量偏好，不要求音频硬件已初始化
+ *
+ * 用于 AP 配网等音频通路尚未建立的场景：音量一定会写入 NVS，
+ * 若 codec 已经初始化则同时立即生效。
+ *
+ * @param volume Volume level (0 to 100 percent)
+ * @return ESP_OK 写入 NVS 成功
+ */
+esp_err_t audio_store_volume(uint8_t volume);
+
+/**
  * @brief Begin streaming PCM playback at an arbitrary sample rate.
  *
  * Reconfigures the I2S TX clock to @p sample_rate. Pair with
