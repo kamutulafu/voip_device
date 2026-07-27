@@ -19,11 +19,14 @@
 #include "lwip/sys.h"
 #include "lwip/sockets.h"
 #include "lwip/netdb.h"
+#include <sys/time.h>
+#include <time.h>
 #include "wifi_manager.h"
 #include "dialogue.h"
 #include "api_service.h"
 #include "device_config.h"
 #include "voice_flow.h"
+#include "audio_driver.h"
 
 static const char *TAG = "wifi_manager";
 
@@ -173,6 +176,7 @@ static const char *setup_html =
 "        <div class=\"logo\">童小盾</div>\n"
 "        <div class=\"subtitle\">配置设备 WiFi 连接</div>\n"
 "        <form action=\"/config\" method=\"POST\">\n"
+"            <input type=\"hidden\" id=\"timestamp\" name=\"timestamp\" value=\"0\">\n"
 "            <div class=\"form-group\">\n"
 "                <label for=\"ssid\">WiFi 网络名称 (SSID)</label>\n"
 "                <input type=\"text\" id=\"ssid\" name=\"ssid\" placeholder=\"请输入 WiFi 名称\" required autocomplete=\"off\">\n"
@@ -181,8 +185,15 @@ static const char *setup_html =
 "                <label for=\"pwd\">WiFi 密码 (Password)</label>\n"
 "                <input type=\"password\" id=\"pwd\" name=\"pwd\" placeholder=\"请输入密码 (无密码请留空)\" autocomplete=\"off\">\n"
 "            </div>\n"
-"            <button type=\"submit\">连接设备</button>\n"
+"            <div class=\"form-group\">\n"
+"                <label for=\"volume\">喇叭初始音量 (0-100%)</label>\n"
+"                <input type=\"number\" id=\"volume\" name=\"volume\" min=\"0\" max=\"100\" placeholder=\"默认 55%\">\n"
+"            </div>\n"
+"            <button type=\"submit\">保存并连接</button>\n"
 "        </form>\n"
+"        <script>\n"
+"            document.getElementById('timestamp').value = Math.floor(Date.now() / 1000);\n"
+"        </script>\n"
 "        <div class=\"footer\">童小盾 系统 &copy; 2026</div>\n"
 "    </div>\n"
 "</body>\n"
@@ -674,6 +685,8 @@ static esp_err_t config_post_handler(httpd_req_t *req)
 
     char raw_ssid[WIFI_SSID_BUF_LEN] = {0};
     char raw_pwd[WIFI_PWD_BUF_LEN] = {0};
+    int vol_val = -1;
+    int64_t ts_val = 0;
 
     char *save_ptr = NULL;
     char *p = strtok_r(buf, "&", &save_ptr);
@@ -682,8 +695,28 @@ static esp_err_t config_post_handler(httpd_req_t *req)
             url_decode(raw_ssid, sizeof(raw_ssid), p + 5);
         } else if (strncmp(p, "pwd=", 4) == 0) {
             url_decode(raw_pwd, sizeof(raw_pwd), p + 4);
+        } else if (strncmp(p, "volume=", 7) == 0) {
+            if (p[7] != '\0') {
+                vol_val = atoi(p + 7);
+            }
+        } else if (strncmp(p, "timestamp=", 10) == 0) {
+            if (p[10] != '\0') {
+                ts_val = atoll(p + 10);
+            }
         }
         p = strtok_r(NULL, "&", &save_ptr);
+    }
+
+    if (vol_val >= 0 && vol_val <= 100) {
+        audio_set_volume((uint8_t)vol_val);
+        ESP_LOGI(TAG, "AP Mode: Speaker initial volume set to %d%% and saved to NVS", vol_val);
+    }
+
+    if (ts_val > 1700000000) { // Valid timestamp (> 2024)
+        struct timeval tv = { .tv_sec = (time_t)ts_val, .tv_usec = 0 };
+        if (settimeofday(&tv, NULL) == 0) {
+            ESP_LOGI(TAG, "AP Mode: System RTC time updated to timestamp %lld via phone/browser", (long long)ts_val);
+        }
     }
 
     ESP_LOGI(TAG, "Received WiFi Configuration: SSID='%s' (%u bytes), password length=%u",
