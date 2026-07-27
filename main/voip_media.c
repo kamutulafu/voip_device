@@ -384,9 +384,9 @@ static void media_push_task(void *pvParameter)
 
             /* H.264 params (must be set AFTER the format) */
             set_codec_control(m2m_fd, V4L2_CID_CODEC_CLASS, V4L2_CID_MPEG_VIDEO_H264_I_PERIOD, 10);
-            set_codec_control(m2m_fd, V4L2_CID_CODEC_CLASS, V4L2_CID_MPEG_VIDEO_BITRATE, 300000);
-            set_codec_control(m2m_fd, V4L2_CID_CODEC_CLASS, V4L2_CID_MPEG_VIDEO_H264_MIN_QP, 32);
-            set_codec_control(m2m_fd, V4L2_CID_CODEC_CLASS, V4L2_CID_MPEG_VIDEO_H264_MAX_QP, 48);
+            set_codec_control(m2m_fd, V4L2_CID_CODEC_CLASS, V4L2_CID_MPEG_VIDEO_BITRATE, 600000);
+            set_codec_control(m2m_fd, V4L2_CID_CODEC_CLASS, V4L2_CID_MPEG_VIDEO_H264_MIN_QP, 24);
+            set_codec_control(m2m_fd, V4L2_CID_CODEC_CLASS, V4L2_CID_MPEG_VIDEO_H264_MAX_QP, 40);
 
             memset(&req, 0, sizeof(req));
             req.count = 1;
@@ -465,12 +465,11 @@ static void media_push_task(void *pvParameter)
 
         /* Audio: always pushed in real time */
         if (audio_read_raw(audio_buf, 1024, &bytes_read, portMAX_DELAY) == ESP_OK && bytes_read > 0) {
-            // Downmix stereo (16-bit) to mono (16-bit) in place by keeping the left channel.
-            // Since we configured I2S slot as stereo, each frame is 4 bytes (L + R).
+            // Pick the active microphone channel from stereo I2S frames.
             int16_t *samples = (int16_t *)audio_buf;
             size_t num_frames = bytes_read / 4;
             for (size_t i = 0; i < num_frames; i++) {
-                samples[i] = samples[2 * i];
+                samples[i] = mic_pick_channel(samples[2 * i], samples[2 * i + 1]);
             }
 
             /* Remove DC/low-frequency hum and clamp peaks before sending so the

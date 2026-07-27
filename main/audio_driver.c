@@ -97,21 +97,6 @@ typedef struct {
 } wav_header_t;
 #pragma pack(pop)
 
-/**
- * @brief 从一个立体声帧里取出麦克风数据。
- *
- * ES8311 是单声道 codec，ADC 数据只出现在 SDOUT 的一个声道上，另一侧是空数据。
- * 之前代码把声道位置写死成"右声道"，那是为了迁就 ws_width 配错时的帧错位；
- * 帧格式修正后声道位置会变。这里取幅度较大的一路，两种情况都正确：
- * 空声道恒为 0 时永远选中有效声道；两声道都带同一路数据时二者相等，选哪个都一样。
- */
-static inline int16_t mic_pick_channel(int16_t left, int16_t right)
-{
-    int32_t abs_l = (left  < 0) ? -(int32_t)left  : (int32_t)left;
-    int32_t abs_r = (right < 0) ? -(int32_t)right : (int32_t)right;
-    return (abs_l >= abs_r) ? left : right;
-}
-
 static esp_err_t es8311_write_reg(uint8_t reg, uint8_t val)
 {
     if (s_es8311_i2c_handle == NULL) {

@@ -161,6 +161,16 @@ void audio_play_pcm_end(void);
 esp_err_t audio_record_mono_pcm(int16_t **out_buf, size_t *out_num_samples, uint32_t duration_sec);
 
 /**
+ * @brief Select the active mic channel with larger absolute amplitude from a stereo frame.
+ */
+static inline int16_t mic_pick_channel(int16_t left, int16_t right)
+{
+    int32_t abs_l = (left  < 0) ? -(int32_t)left  : (int32_t)left;
+    int32_t abs_r = (right < 0) ? -(int32_t)right : (int32_t)right;
+    return (abs_l >= abs_r) ? left : right;
+}
+
+/**
  * @brief Read raw frames directly from the I2S RX channel (16 kHz/16-bit/stereo).
  *        Ensures the audio system is initialized before reading.
  *
