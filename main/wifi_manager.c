@@ -30,6 +30,7 @@
 #include "voice_flow.h"
 #include "audio_driver.h"
 #include "app_time.h"
+#include "time_sync.h"
 
 static const char *TAG = "wifi_manager";
 
@@ -179,8 +180,6 @@ static const char *setup_html =
 "        <div class=\"logo\">童小盾</div>\n"
 "        <div class=\"subtitle\">配置设备 WiFi 连接</div>\n"
 "        <form id=\"cfgForm\" action=\"/config\" method=\"POST\">\n"
-"            <input type=\"hidden\" id=\"timestamp\" name=\"timestamp\" value=\"0\">\n"
-"            <input type=\"hidden\" id=\"tz\" name=\"tz\" value=\"480\">\n"
 "            <div class=\"form-group\">\n"
 "                <label for=\"ssid\">WiFi 网络名称 (SSID)</label>\n"
 "                <input type=\"text\" id=\"ssid\" name=\"ssid\" placeholder=\"请输入 WiFi 名称\" required autocomplete=\"off\">\n"
@@ -195,15 +194,6 @@ static const char *setup_html =
 "            </div>\n"
 "            <button type=\"submit\">保存并连接</button>\n"
 "        </form>\n"
-"        <script>\n"
-"            function stampNow() {\n"
-"                document.getElementById('timestamp').value = Math.floor(Date.now() / 1000);\n"
-"                document.getElementById('tz').value = -new Date().getTimezoneOffset();\n"
-"            }\n"
-"            stampNow();\n"
-"            /* 提交前再取一次：否则填表花掉的时间会全部变成时钟误差 */\n"
-"            document.getElementById('cfgForm').addEventListener('submit', stampNow);\n"
-"        </script>\n"
 "        <div class=\"footer\">童小盾 系统 &copy; 2026</div>\n"
 "    </div>\n"
 "</body>\n"
@@ -696,8 +686,6 @@ static esp_err_t config_post_handler(httpd_req_t *req)
     char raw_ssid[WIFI_SSID_BUF_LEN] = {0};
     char raw_pwd[WIFI_PWD_BUF_LEN] = {0};
     int vol_val = -1;
-    int64_t ts_val = 0;
-    int tz_val = INT_MIN;   /* 手机所在时区相对 UTC 的分钟数，东为正 */
 
     char *save_ptr = NULL;
     char *p = strtok_r(buf, "&", &save_ptr);
@@ -709,14 +697,6 @@ static esp_err_t config_post_handler(httpd_req_t *req)
         } else if (strncmp(p, "volume=", 7) == 0) {
             if (p[7] != '\0') {
                 vol_val = atoi(p + 7);
-            }
-        } else if (strncmp(p, "timestamp=", 10) == 0) {
-            if (p[10] != '\0') {
-                ts_val = atoll(p + 10);
-            }
-        } else if (strncmp(p, "tz=", 3) == 0) {
-            if (p[3] != '\0') {
-                tz_val = atoi(p + 3);
             }
         }
         p = strtok_r(NULL, "&", &save_ptr);
@@ -732,16 +712,6 @@ static esp_err_t config_post_handler(httpd_req_t *req)
         } else {
             ESP_LOGE(TAG, "AP Mode: Failed to save volume %d%%: %s", vol_val, esp_err_to_name(verr));
         }
-    }
-
-    /* 时区必须先于时间戳落地：app_time_set_epoch() 打印的本地时间要用新时区 */
-    if (tz_val != INT_MIN) {
-        (void)app_time_set_utc_offset_minutes(tz_val);
-    }
-
-    if (ts_val > 0) {
-        /* 浏览器给的是 UTC 纪元秒，系统时钟统一存 UTC，显示时由时区换算 */
-        (void)app_time_set_epoch(ts_val);
     }
 
     ESP_LOGI(TAG, "Received WiFi Configuration: SSID='%s' (%u bytes), password length=%u",
@@ -951,6 +921,7 @@ esp_err_t wifi_manager_join_sta(const char* ssid, const char* pass)
 
         if (internet_ok) {
             ESP_LOGI(TAG, "Internet connectivity verified successfully! Network is fully accessible.");
+            time_sync_start(); // 联网确认可用后，异步"蹭"一次HTTP Date响应头校准系统时间
             xTaskCreate(fetch_device_config_task, "fetch_dev_cfg", 8192, NULL, 5, NULL); // 自动异步获取设备配置更新 use_type (HTTPS+RSA加密需8KB栈空间)
             play_local_voice(PATH_V_NET_OK, TEXT_V_NET_OK);
         } else {
