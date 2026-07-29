@@ -184,7 +184,8 @@ static void media_recv_task(void *pvParameter)
     ESP_LOGI(TAG, "VoIP media recv task started");
 
     uint8_t *recv_hdr = malloc(5);
-    uint8_t *pcm_buf = malloc(2048);
+    size_t buf_cap = 4096;
+    uint8_t *pcm_buf = malloc(buf_cap);
 
     if (!recv_hdr || !pcm_buf) {
         ESP_LOGE(TAG, "Failed to allocate media recv buffers");
@@ -208,9 +209,19 @@ static void media_recv_task(void *pvParameter)
         uint8_t type = recv_hdr[0];
         uint32_t length = *(uint32_t *)(recv_hdr + 1);
 
-        if (length > 2048) {
-            ESP_LOGE(TAG, "Received packet too large: %u", (unsigned)length);
+        if (length > 256 * 1024) {
+            ESP_LOGE(TAG, "Received packet too large (corrupted?): %u", (unsigned)length);
             goto exit;
+        }
+
+        if (length > buf_cap) {
+            uint8_t *new_buf = realloc(pcm_buf, length);
+            if (!new_buf) {
+                ESP_LOGE(TAG, "Failed to realloc recv buffer to %u bytes", (unsigned)length);
+                goto exit;
+            }
+            pcm_buf = new_buf;
+            buf_cap = length;
         }
 
         received = 0;
@@ -226,6 +237,8 @@ static void media_recv_task(void *pvParameter)
         if (type == 0) {
             size_t num_samples = length / 2;
             audio_play_pcm_write((int16_t *)pcm_buf, num_samples, 1);
+        } else {
+            ESP_LOGD(TAG, "Received non-audio packet type %u, len %u (ignored)", (unsigned)type, (unsigned)length);
         }
     }
 

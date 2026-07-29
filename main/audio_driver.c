@@ -983,8 +983,8 @@ esp_err_t audio_play_pcm_write(const int16_t *pcm, size_t num_samples, int chann
 
     if (channels == 1) {
         /* Duplicate mono sample to both Left and Right I2S slots. */
-        static int16_t stereo[1024];
-        const size_t CHUNK = 512; /* mono samples per pass */
+        int16_t stereo[512];
+        const size_t CHUNK = 256; /* mono samples per pass */
         size_t i = 0;
         while (i < num_samples) {
             size_t n = num_samples - i;
@@ -1002,8 +1002,8 @@ esp_err_t audio_play_pcm_write(const int16_t *pcm, size_t num_samples, int chann
         }
     } else {
         /* Play stereo PCM to both Left and Right I2S slots. */
-        static int16_t stereo_play[1024];
-        const size_t CHUNK = 512; /* stereo samples (frames) per pass */
+        int16_t stereo_play[512];
+        const size_t CHUNK = 256; /* stereo samples (frames) per pass */
         size_t i = 0;
         while (i < num_samples) {
             size_t n = num_samples - i;

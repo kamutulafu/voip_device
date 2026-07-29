@@ -172,13 +172,14 @@ void audio_play_pcm_end(void);
 esp_err_t audio_record_mono_pcm(int16_t **out_buf, size_t *out_num_samples, uint32_t duration_sec);
 
 /**
- * @brief Select the active mic channel with larger absolute amplitude from a stereo frame.
+ * @brief Select the active mic channel from a stereo I2S frame.
+ *        ES8311 is a mono codec: ADC audio resides on the Left channel (slot 0).
+ *        The Right channel (slot 1) is Hi-Z / un-driven and can read floating noise.
  */
 static inline int16_t mic_pick_channel(int16_t left, int16_t right)
 {
-    int32_t abs_l = (left  < 0) ? -(int32_t)left  : (int32_t)left;
-    int32_t abs_r = (right < 0) ? -(int32_t)right : (int32_t)right;
-    return (abs_l >= abs_r) ? left : right;
+    (void)right;
+    return left;
 }
 
 /**
