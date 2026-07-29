@@ -378,13 +378,23 @@ static call_result_t place_voip_call(const char *openid)
      *   2=talking, 3=rejected, 5=hangup(caller), 6=hangup(callee),
      *   7=aborted/poweroff, 8=busy, 9=ring timeout */
     bool answered = false;
-    int elapsed = 0;
-    while (elapsed < CALL_POLL_TOTAL_MS) {
+    int ring_elapsed = 0;
+    int talk_elapsed = 0;
+
+    for (;;) {
         int st = voip_get_call_status(VOIP_PAYLOAD);
         ESP_LOGI(TAG, "call status = %d", st);
+
         if (st == 2) {
             s_voip_call_connected = true;
             answered = true;
+            talk_elapsed += CALL_POLL_INTERVAL_MS;
+            /* 30-minute safety cap for max call duration */
+            if (talk_elapsed >= 1800000) {
+                ESP_LOGW(TAG, "Max call duration reached (30 mins), ending call");
+                s_voip_call_connected = false;
+                return CALL_ANSWERED_ENDED;
+            }
         } else if (answered && (st == 5 || st == 6)) {
             s_voip_call_connected = false;
             return CALL_ANSWERED_ENDED;
@@ -394,12 +404,17 @@ static call_result_t place_voip_call(const char *openid)
         } else if (st == 7) {
             s_voip_call_connected = false;
             return CALL_POWEROFF;
+        } else if (!answered) {
+            ring_elapsed += CALL_POLL_INTERVAL_MS;
+            if (ring_elapsed >= CALL_POLL_TOTAL_MS) {
+                /* 60s dialing/ring timeout without answer */
+                s_voip_call_connected = false;
+                return CALL_NO_ANSWER;
+            }
         }
+
         vTaskDelay(pdMS_TO_TICKS(CALL_POLL_INTERVAL_MS));
-        elapsed += CALL_POLL_INTERVAL_MS;
     }
-    s_voip_call_connected = false;
-    return answered ? CALL_ANSWERED_ENDED : CALL_NO_ANSWER;
 }
 
 /* Find a contact by relation code. Returns NULL when not present. */
@@ -1037,12 +1052,13 @@ static void voice_task(void *arg)
         s->timed_out = true; // Flag timed out to skip dialogue_farewell
     }
 
-    /* 1.5 farewell + close session. Only say farewell if we didn't already timeout. */
+    /* 1.5 farewell + close session. Stop keep-alive task first before 5s TTS playback. */
+    keep_alive_stop();
+
     if (!s->timed_out) {
         dialogue_farewell();
     }
 
-    keep_alive_stop();
     session_close(s);
 
     s_session_active = false;

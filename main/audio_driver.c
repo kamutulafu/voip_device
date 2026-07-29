@@ -132,7 +132,15 @@ static esp_err_t es8311_write_reg(uint8_t reg, uint8_t val)
         return ESP_ERR_INVALID_STATE;
     }
     uint8_t buf[2] = {reg, val};
-    return i2c_master_transmit(s_es8311_i2c_handle, buf, 2, pdMS_TO_TICKS(1000));
+    esp_err_t err = ESP_FAIL;
+    for (int retry = 0; retry < 3; retry++) {
+        err = i2c_master_transmit(s_es8311_i2c_handle, buf, 2, pdMS_TO_TICKS(1000));
+        if (err == ESP_OK) {
+            return ESP_OK;
+        }
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
+    return err;
 }
 
 esp_err_t audio_es8311_read_reg(uint8_t reg, uint8_t *val)
@@ -140,7 +148,15 @@ esp_err_t audio_es8311_read_reg(uint8_t reg, uint8_t *val)
     if (s_es8311_i2c_handle == NULL) {
         return ESP_ERR_INVALID_STATE;
     }
-    return i2c_master_transmit_receive(s_es8311_i2c_handle, &reg, 1, val, 1, pdMS_TO_TICKS(1000));
+    esp_err_t err = ESP_FAIL;
+    for (int retry = 0; retry < 3; retry++) {
+        err = i2c_master_transmit_receive(s_es8311_i2c_handle, &reg, 1, val, 1, pdMS_TO_TICKS(1000));
+        if (err == ESP_OK) {
+            return ESP_OK;
+        }
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
+    return err;
 }
 
 static esp_err_t es8311_init_internal(void)
