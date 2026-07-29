@@ -9,6 +9,24 @@
 /* Default speaker volume (0-100). 75% balances loudness vs clipping on the PA. */
 #define AUDIO_DEFAULT_VOLUME    55
 
+#pragma pack(push, 1)
+typedef struct {
+    char chunk_id[4];          // "RIFF"
+    uint32_t chunk_size;       // file_size - 8
+    char format[4];            // "WAVE"
+    char subchunk1_id[4];      // "fmt "
+    uint32_t subchunk1_size;   // 16 for PCM
+    uint16_t audio_format;     // 1 for PCM
+    uint16_t num_channels;     // 2 (Stereo)
+    uint32_t sample_rate;      // 16000
+    uint32_t byte_rate;        // sample_rate * num_channels * bits_per_sample / 8
+    uint16_t block_align;      // num_channels * bits_per_sample / 8
+    uint16_t bits_per_sample;  // 16
+    char subchunk2_id[4];      // "data"
+    uint32_t subchunk2_size;   // data_size
+} wav_header_t;
+#pragma pack(pop)
+
 /**
  * @brief Initialize the audio system (I2C, ES8311 Codec, and I2S)
  * @return ESP_OK on success, appropriate error code otherwise

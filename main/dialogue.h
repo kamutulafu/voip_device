@@ -83,6 +83,19 @@ void dialogue_welcome_unknown(void);
 /** 1.2 公益用户在校外版设备的提示语。@p name 宝宝姓名。 */
 void dialogue_welcome_public_offcampus(const char *name);
 
+/** 公益用户拨打电话拦截提示语。@p name 宝宝姓名。 */
+void dialogue_call_public(const char *name);
+
+/** 授权与小程序登录状态提示语。 */
+void dialogue_call_no_auth(const char *name, const char *contact);
+void dialogue_wx_openid_error(const char *name, const char *contact);
+void dialogue_call_error(void);
+
+/** 好友添加场景提示语。 */
+void dialogue_friend_know(const char *nameA, const char *nameB);
+void dialogue_friend_has_be(const char *nameA, const char *nameB);
+void dialogue_friend_self(const char *name);
+
 /** 1.3 长时间无回应的告别语（挂断前）。 */
 void dialogue_timeout_bye(void);
 

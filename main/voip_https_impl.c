@@ -57,14 +57,23 @@ static struct esp_tls *tls_connect(const char *host, int port)
         allocated = true;
     }
 
-    struct esp_tls *tls = esp_tls_conn_http_new(url, &cfg);
+    struct esp_tls *tls = esp_tls_init();
+    if (!tls) {
+        if (allocated) free(url);
+        ESP_LOGE(TAG, "esp_tls_init failed for %s", host);
+        return NULL;
+    }
+
+    int ret = esp_tls_conn_http_new_sync(url, &cfg, tls);
 
     if (allocated) {
         free(url);
     }
 
-    if (tls == NULL) {
-        ESP_LOGE(TAG, "TLS connection to %s failed", host);
+    if (ret != 1) {
+        ESP_LOGE(TAG, "TLS connection to %s failed (ret=%d)", host, ret);
+        esp_tls_conn_destroy(tls);
+        return NULL;
     }
     return tls;
 }

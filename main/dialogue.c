@@ -287,18 +287,63 @@ void dialogue_greeting(void)
 
 void dialogue_welcome_menu(const char *name)
 {
-    dialogue_speak_fmt("哇，%s你好，很高兴为你服务，你可以说发留言打电话或者加好友，说完请说over",
+    dialogue_speak_fmt("哇，%s你好，很高兴为你服务，你可以说发留言、打电话或者加好友，说完请说over",
                        (name && name[0]) ? name : "小朋友");
 }
 
 void dialogue_welcome_unknown(void)
 {
-    dialogue_speak("你好，我还不认识你呢，快让你的家长开通吧，也可以说发留言来使用我的公益服务");
+    dialogue_speak("你好，我还不认识你呢，快让家长开通吧。你也可以说发留言使用我的公益服务，说完请说over");
 }
 
 void dialogue_welcome_public_offcampus(const char *name)
 {
-    dialogue_speak_fmt("哇，%s你好，你是公益用户，无法使用校外版设备",
+    dialogue_speak_fmt("哇，%s你好，你是公益板用户，无法使用校外设备，请让家长帮你开通商业版后使用。拜拜~",
+                       (name && name[0]) ? name : "小朋友");
+}
+
+void dialogue_call_public(const char *name)
+{
+    dialogue_speak_fmt("%s你好，你是公益版用户，无法使用电话号码呼叫功能，请让家长帮你开通商业版后使用。拜拜~",
+                       (name && name[0]) ? name : "小朋友");
+}
+
+void dialogue_call_no_auth(const char *name, const char *contact)
+{
+    dialogue_speak_fmt("抱歉,%s的%s还没有授权这台设备让你进行通话，请让他授权后再来使用。拜拜~",
+                       (name && name[0]) ? name : "小朋友",
+                       (contact && contact[0]) ? contact : "联系人");
+}
+
+void dialogue_wx_openid_error(const char *name, const char *contact)
+{
+    dialogue_speak_fmt("%s的%s还没有登录童小盾小程序，无法进行呼叫。通话结束，拜拜~",
+                       (name && name[0]) ? name : "小朋友",
+                       (contact && contact[0]) ? contact : "联系人");
+}
+
+void dialogue_call_error(void)
+{
+    dialogue_speak("通话已异常终止，如需再次通话请重新唤醒童小盾，感谢你的使用，拜拜");
+}
+
+void dialogue_friend_know(const char *nameA, const char *nameB)
+{
+    dialogue_speak_fmt("哇，%s你好，现在你和%s已经正式成为好朋友啦。以后可以通过我互相留言啦。有需要再找我，拜拜~",
+                       (nameA && nameA[0]) ? nameA : "小朋友",
+                       (nameB && nameB[0]) ? nameB : "小伙伴");
+}
+
+void dialogue_friend_has_be(const char *nameA, const char *nameB)
+{
+    dialogue_speak_fmt("嘿嘿，经我过再三查证，%s、%s,你们早已经是好朋友啦！有需要再找我，拜拜~",
+                       (nameA && nameA[0]) ? nameA : "小朋友",
+                       (nameB && nameB[0]) ? nameB : "小伙伴");
+}
+
+void dialogue_friend_self(const char *name)
+{
+    dialogue_speak_fmt("%s，不可以添加自己为好友哦。现在请你藏起来，让你的好朋友站过来让我认识一下吧！",
                        (name && name[0]) ? name : "小朋友");
 }
 

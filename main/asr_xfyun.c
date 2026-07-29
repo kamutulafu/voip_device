@@ -605,6 +605,12 @@ esp_err_t asr_xfyun_record_and_recognize_stream(uint32_t duration_sec,
         }
         first_frame = false;
         total_samples_written += stereo_frames;
+
+        /* Early exit if stop signal ("说完了" or "over") is recognized in real-time streaming text */
+        if (ctx.text && (strstr(ctx.text, "说完了") || strstr(ctx.text, "over") || strstr(ctx.text, "Over"))) {
+            ESP_LOGI(TAG, "Detected end-of-message keyword ('说完了' / 'over') in streaming ASR text: '%s'. Stopping recording.", ctx.text);
+            break;
+        }
     }
 
     free(stereo_buf);

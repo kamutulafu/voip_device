@@ -469,16 +469,63 @@ static void record_upload_save(session_t *s, const char *receiver_id,
                                const char *relation_code, const char *direction,
                                const char *reply_id)
 {
-    dialogue_speak("好的！请说出您的留言，说完说over");
+    dialogue_speak("好的。 请在滴声后说出你的留言，说完请说'说完了'。");
+    dialogue_beep();
 
-    const uint32_t rec_sec = 8;
-    uint8_t *audio_buf = NULL;
-    size_t audio_len = 0;
-    if (audio_record_to_mem(&audio_buf, &audio_len, rec_sec) != ESP_OK || audio_len == 0) {
-        ESP_LOGE(TAG, "recording leave msg to memory failed");
+    char recognized_text[256] = "";
+    int16_t *pcm_data = NULL;
+    size_t num_samples = 0;
+    const uint32_t max_rec_sec = 15;
+
+    /* 实时流式录音并识别：一旦在流数据中识别到“说完了”或“over”即立刻停止录音并返回音频数据 */
+    esp_err_t err = asr_xfyun_record_and_recognize_stream(max_rec_sec, recognized_text, sizeof(recognized_text),
+                                                          &pcm_data, &num_samples);
+    if (err != ESP_OK || !pcm_data || num_samples == 0) {
+        ESP_LOGE(TAG, "recording leave msg failed");
+        if (pcm_data) free(pcm_data);
         dialogue_speak("录音好像出问题了呢");
         return;
     }
+
+    uint32_t recorded_sec = (uint32_t)(num_samples / 16000);
+    if (recorded_sec == 0) recorded_sec = 1;
+    ESP_LOGI(TAG, "Message recorded: %zu samples (%u sec), ASR text: '%s'",
+             num_samples, (unsigned)recorded_sec, recognized_text);
+
+    /* 构筑标准 16kHz 双声道 WAV 内存 Buffer 供服务端接口上传 */
+    uint32_t data_bytes = (uint32_t)(num_samples * 2 * sizeof(int16_t));
+    size_t audio_len = sizeof(wav_header_t) + data_bytes;
+    uint8_t *audio_buf = heap_caps_malloc(audio_len, MALLOC_CAP_SPIRAM);
+    if (!audio_buf) {
+        audio_buf = malloc(audio_len);
+    }
+    if (!audio_buf) {
+        free(pcm_data);
+        dialogue_speak("内存分配失败，请稍后再试");
+        return;
+    }
+
+    wav_header_t *hdr = (wav_header_t *)audio_buf;
+    memcpy(hdr->chunk_id, "RIFF", 4);
+    hdr->chunk_size = data_bytes + sizeof(wav_header_t) - 8;
+    memcpy(hdr->format, "WAVE", 4);
+    memcpy(hdr->subchunk1_id, "fmt ", 4);
+    hdr->subchunk1_size = 16;
+    hdr->audio_format = 1; /* PCM */
+    hdr->num_channels = 2; /* Stereo */
+    hdr->sample_rate = 16000;
+    hdr->bits_per_sample = 16;
+    hdr->byte_rate = 16000 * 2 * 16 / 8;
+    hdr->block_align = 4;
+    memcpy(hdr->subchunk2_id, "data", 4);
+    hdr->subchunk2_size = data_bytes;
+
+    int16_t *dst_samples = (int16_t *)(audio_buf + sizeof(wav_header_t));
+    for (size_t i = 0; i < num_samples; i++) {
+        dst_samples[2 * i]     = pcm_data[i];
+        dst_samples[2 * i + 1] = pcm_data[i];
+    }
+    free(pcm_data);
 
     /* Best-effort scene photo. */
     char img_url[256] = "";
@@ -515,7 +562,7 @@ static void record_upload_save(session_t *s, const char *receiver_id,
     cJSON_AddStringToObject(o, "receiverId", receiver_id ? receiver_id : "");
     cJSON_AddStringToObject(o, "relation", relation_code ? relation_code : "");
     cJSON_AddStringToObject(o, "direction", direction ? direction : "0");
-    cJSON_AddNumberToObject(o, "duration", rec_sec);
+    cJSON_AddNumberToObject(o, "duration", recorded_sec);
     cJSON_AddStringToObject(o, "deviceId", DEVICE_ID);
     cJSON_AddStringToObject(o, "soundPath", snd_url);
     cJSON_AddStringToObject(o, "imgPath", img_url);
@@ -525,7 +572,7 @@ static void record_upload_save(session_t *s, const char *receiver_id,
     cJSON_Delete(o);
     if (sr) api_result_free(sr);
 
-    dialogue_speak("收到啦！已光速发送给对方");
+    dialogue_speak("收到啦！已光速发送给对方。有需要再找我，拜拜~");
 }
 
 /* ---- 2.1 / 2.2 message playback flow ---------------------------------- */
@@ -538,11 +585,11 @@ static void handle_messages(session_t *s)
 
         /* Announce (首条与后续文案不同). */
         if (n == 1) {
-            dialogue_speak_fmt("哇%s您好，很高兴为您服务，您有一条新留言，来自%s，现在开始播放",
+            dialogue_speak_fmt("哇，%s你好，很高兴为你服务，你有一条新留言，来自%s，现在开始播放",
                                s->baby_name[0] ? s->baby_name : "小朋友",
                                m->from_name[0] ? m->from_name : "家长");
         } else if (i == 0) {
-            dialogue_speak_fmt("哇%s您好，您有%d条留言！现在开始播放第1条留言，来自%s",
+            dialogue_speak_fmt("哇，%s你好，很高兴为你服务，你有%d条留言！现在开始播放第一条留言，来自%s",
                                s->baby_name[0] ? s->baby_name : "小朋友", n,
                                m->from_name[0] ? m->from_name : "家长");
         } else {
@@ -555,7 +602,8 @@ static void handle_messages(session_t *s)
             play_leave_msg(m);
             mark_msg_read(s, m);
 
-            dialogue_speak("是否回复或重听？请说我要回复、不用回复或者重播，说完请说over");
+            dialogue_speak("是否回复或重听？请在滴声后说“我要回复”、“不用回复”，或者“重播”。说完请说over");
+            dialogue_beep();
             char text[256];
             if (!listen_with_retry(text, sizeof(text))) {
                 voice_flow_timeout_exit(s);
@@ -585,8 +633,9 @@ static void handle_send_msg(session_t *s)
 {
     for (int tries = 0; tries < 3; tries++) {
         dialogue_speak(tries == 0
-            ? "好的，想发送给谁呢？请说出对方的名字或电话，说完请说over"
-            : "没有找到这个好友，请再说一次名字或电话，说完请说over");
+            ? "好的。 想发送给谁呢？请在滴声后说出对方的名字或电话，说完请说over"
+            : "没有找到这个好友，请在滴声后再说一次对方的名字或电话吧.说完请说over");
+        dialogue_beep();
 
         char text[256];
         if (!listen_with_retry(text, sizeof(text))) {
@@ -650,7 +699,7 @@ static bool is_existing_friend(session_t *s, const char *baby_id)
 
 static void handle_add_friend(session_t *s)
 {
-    dialogue_speak("好的，现在请您藏起来，让您的好朋友站过来让我认识一下吧！");
+    dialogue_speak("好的。 现在请你藏起来，让你的好朋友站过来让我认识一下吧！");
 
     const int64_t start = esp_timer_get_time();
     const int64_t soft_us = 10 * 1000000LL;  /* 10s soft reminder */
@@ -704,15 +753,19 @@ static void handle_add_friend(session_t *s)
         if (res) api_result_free(res);
 
         if (recognized) {
+            if (s->baby_id[0] && strcmp(friend_baby_id, s->baby_id) == 0) {
+                dialogue_friend_self(s->baby_name);
+                vTaskDelay(pdMS_TO_TICKS(2000));
+                continue;
+            }
             if (is_existing_friend(s, friend_baby_id)) {
-                dialogue_speak("嘿嘿，经我再三查证，你们早已经是好朋友啦！");
+                dialogue_friend_has_be(s->baby_name, friend_name);
             } else {
                 /* registered user -> add as friend */
                 api_result_t *ar = api_add_friends_mem(DEVICE_ID, s->session_id,
                                                     friend_baby_id, NULL, 0, friend_name);
                 if (ar) api_result_free(ar);
-                dialogue_speak_fmt("哇%s您好，现在你们已经正式成为好朋友啦",
-                                   friend_name[0] ? friend_name : "小朋友");
+                dialogue_friend_know(s->baby_name, friend_name);
             }
             free(photo_buf);
             return;
@@ -727,7 +780,7 @@ static void handle_add_friend(session_t *s)
     }
 
     free(photo_buf);
-    dialogue_speak("等太久了呢，我们下次再试吧");
+    dialogue_speak("等太久了呢，我们下次再试吧。有需要再找我，拜拜~");
 }
 
 /* ---- 4. call an emergency contact ------------------------------------- */
@@ -756,6 +809,11 @@ static void save_call_log(session_t *s, contact_t *c, call_result_t r)
 
 static void handle_call(session_t *s, const char *heard)
 {
+    if (s->equipment_status == 1) {
+        dialogue_call_public(s->baby_name);
+        return;
+    }
+
     char rel[16] = "";
     contact_t *target = NULL;
 
@@ -770,7 +828,7 @@ static void handle_call(session_t *s, const char *heard)
             return;
         }
         contact_t *first = &s->contacts[0];
-        dialogue_speak_fmt("%s好像还不是你的联系人，是否帮你打给%s？请说是或否，说完请说over",
+        dialogue_speak_fmt("%s好像还不是你的联系人，是否帮你打给%s，是请说是，否请说不要，说完请说over",
                            has_rel ? relation_code_to_cn(rel) : "这个联系人",
                            relation_code_to_cn(first->relation));
         char t[128];
@@ -786,7 +844,12 @@ static void handle_call(session_t *s, const char *heard)
     }
 
     while (target) {
-        dialogue_speak_fmt("好的！正在拨打%s的电话，请稍等！", relation_code_to_cn(target->relation));
+        if (target->wx_openid[0] == '\0') {
+            dialogue_wx_openid_error(s->baby_name, relation_code_to_cn(target->relation));
+            return;
+        }
+
+        dialogue_speak_fmt("好的。 正在拨打%s的电话，请稍等！", relation_code_to_cn(target->relation));
 
         call_result_t r = place_voip_call(target->wx_openid);
         save_call_log(s, target, r);
@@ -794,7 +857,7 @@ static void handle_call(session_t *s, const char *heard)
         if (r == CALL_ANSWERED_ENDED) {
             return; /* talk finished -> farewell */
         } else if (r == CALL_NO_ANSWER) {
-            dialogue_speak_fmt("哎呀，%s好像没有接听哦！要不要再试一次？请说是或否，说完请说over",
+            dialogue_speak_fmt("哎呀，%s好像没有接听哦！要不要再试一次？，请说是，或者否，说完请说over",
                                relation_code_to_cn(target->relation));
             char t[128];
             if (!listen_with_retry(t, sizeof(t))) {
@@ -806,7 +869,7 @@ static void handle_call(session_t *s, const char *heard)
             }
             return;
         } else if (r == CALL_POWEROFF) {
-            dialogue_speak_fmt("糟糕！%s的电话关机了！要不要拨打其他紧急联系人？请说出要拨打给谁，说完请说over",
+            dialogue_speak_fmt("糟糕！%s的电话关机了！要不要拨打其他紧急联系人？，请说出要拨打给谁，说完请说over",
                                relation_code_to_cn(target->relation));
             char t[128];
             if (!listen_with_retry(t, sizeof(t))) {
@@ -824,7 +887,7 @@ static void handle_call(session_t *s, const char *heard)
             }
             return; /* give up -> farewell */
         } else {
-            dialogue_speak("呼叫失败了呢，请稍后再试");
+            dialogue_call_error();
             return;
         }
     }
@@ -1052,13 +1115,8 @@ static void voice_task(void *arg)
         s->timed_out = true; // Flag timed out to skip dialogue_farewell
     }
 
-    /* 1.5 farewell + close session. Stop keep-alive task first before 5s TTS playback. */
+    /* Session cleanup. Stop keep-alive task before closing session. */
     keep_alive_stop();
-
-    if (!s->timed_out) {
-        dialogue_farewell();
-    }
-
     session_close(s);
 
     s_session_active = false;
